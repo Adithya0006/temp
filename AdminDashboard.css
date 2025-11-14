@@ -1,0 +1,130 @@
+/* Base Dashboard Wrapper and Header (Copied from EmptyDashboard.css) */
+.dashboard-wrapper {
+    font-family: Arial, sans-serif;
+    background-color: #e9ebee;
+    min-height: 100vh;
+    margin: 0;
+}
+.header {
+    background-color: #2c3e50;
+    color: white;
+    padding: 15px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.logout-btn {
+    padding: 8px 15px;
+    background-color: #e74c3c;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+}
+.dashboard-container {
+    padding: 20px;
+    max-width: 1200px; 
+    margin: 20px auto; 
+    background-color: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    min-height: 80vh; 
+}
+
+/* --- New Styles --- */
+
+/* Upload Card */
+.upload-card {
+    background-color: #f8f9fa;
+    padding: 20px;
+    border-radius: 8px;
+    border: 1px dashed #ced4da;
+    text-align: center;
+    margin-bottom: 20px;
+}
+.file-upload-label {
+    display: inline-block;
+    padding: 10px 20px;
+    background-color: #007bff;
+    color: white;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-top: 10px;
+    transition: background-color 0.2s;
+}
+.file-upload-label:hover {
+    background-color: #0056b3;
+}
+.file-status {
+    margin-top: 10px;
+    font-style: italic;
+    color: #555;
+}
+
+/* Tabs */
+.tabs-container {
+    border-bottom: 2px solid #ccc;
+    margin-bottom: 20px;
+}
+.tab-button {
+    background-color: transparent;
+    border: none;
+    padding: 10px 20px;
+    cursor: pointer;
+    font-size: 16px;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px; /* Pulls button below the border */
+    transition: all 0.2s;
+}
+.tab-button:hover {
+    background-color: #f0f0f0;
+}
+.tab-button.active {
+    border-bottom: 3px solid #007bff;
+    font-weight: bold;
+    color: #007bff;
+}
+
+/* Tables */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+    background-color: white;
+}
+.data-table th, .data-table td {
+    border: 1px solid #ddd;
+    padding: 10px;
+    text-align: left;
+}
+.data-table th {
+    background-color: #f2f2f2;
+    font-weight: bold;
+    color: #333;
+}
+
+/* Save Button */
+.save-button-container {
+    text-align: right;
+    padding: 10px 0;
+    border-top: 1px solid #eee;
+}
+.save-button-container button {
+    padding: 10px 20px;
+    background-color: #2ecc71;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-color 0.2s;
+}
+.save-button-container button:hover:not(:disabled) {
+    background-color: #27ae60;
+}
+.save-button-container button:disabled {
+    background-color: #95a5a6;
+    cursor: not-allowed;
+}
