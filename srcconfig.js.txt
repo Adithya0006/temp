@@ -1,0 +1,46 @@
+// src/config.js
+
+// SERVER 1: Node.js Backend (e.g., Auth, General API)
+const NODE_IP = "192.168.0.20";
+const NODE_PORT = "8082";
+export const NODE_API_URL = `http://${NODE_IP}:${NODE_PORT}/api`;
+
+// SERVER 2: Python/Flask Backend (e.g., AI Data Processing)
+const PYTHON_IP = "192.168.0.25"; // Different IP or Port
+const PYTHON_PORT = "5000";
+export const PYTHON_API_URL = `http://${PYTHON_IP}:${PYTHON_PORT}/api`;
+
+// (Optional) Common endpoints map for cleaner imports
+export const ENDPOINTS = {
+    AUTH: `${NODE_API_URL}/auth`,
+    PCB: `${NODE_API_URL}/pcb`,
+    ANALYTICS: `${PYTHON_API_URL}/analytics`,
+    PROCESS: `${PYTHON_API_URL}/process`
+};
+
+
+
+
+
+
+
+import { ENDPOINTS } from "./config"; // Import the map
+
+// Now uses the Node server URL automatically
+const API_URL = ENDPOINTS.PCB; 
+
+// ... rest of your code ...
+axios.get(`${API_URL}/history`)...
+
+
+
+
+
+import { ENDPOINTS } from "./config"; 
+
+// Uses Python server URL
+const API_URL = ENDPOINTS.PROCESS; 
+
+const handleSubmit = () => {
+   axios.post(`${API_URL}/new`, form)...
+}
