@@ -1,201 +1,184 @@
 
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import func, case, distinct, cast, Date
-from datetime import datetime
-import statistics
-@app.get("/dashboard/analytics")
-def get_dashboard_analytics(db: Session = Depends(get_db)):
-    """
-    MASTER DASHBOARD ANALYTICS
-    Returns:
-    1. PCB Breakdown (Type & Status)
-    2. Production Flow (WIP & Staff Capacity per Step)
-    3. Operator Load (Active PCBs per Operator)
-    4. Cycle Time (Average duration per Step)
-    5. Batch Aging (Stuck/Old Batches)
-    6. Daily Order Trend (Velocity) - NEW!
-    """
+@app.post("/operator/updatestatus")
+def update_status(req: OperatorActionRequest, db: Session = Depends(get_db)):
 
-    # Helper for date parsing
-    def parse_db_date(date_str):
-        if not date_str: return None
-        try: return datetime.fromisoformat(str(date_str))
-        except ValueError: return None
+    # -----------------------------
+    # 1️⃣ Validate operator
+    # -----------------------------
+    operator = normalize_staff(req.operator_staff_no)
+    profile = find_user_from_profiles(db, operator)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Operator not found")
 
-    # ======================================================
-    # 1. PCB TYPE COUNTS
-    # ======================================================
-    type_counts = (
-        db.query(PcbData.Type, func.count(PcbData.ID).label("count"))
-        .group_by(PcbData.Type)
-        .all()
-    )
-    pcb_type_distribution = {(row.Type or "Unknown"): row.count for row in type_counts}
+    # -----------------------------
+    # 2️⃣ Fetch PCB process log (CURRENT STEP)
+    # -----------------------------
+    log = db.query(PCBProcessLog).filter(
+        PCBProcessLog.assignment_id == req.assignment_id,
+        PCBProcessLog.flow_step_id == req.current_step_id
+    ).first()
 
-    # ======================================================
-    # 2. PCB STATUS COUNTS
-    # ======================================================
-    status_counts = (
-        db.query(PcbData.status, func.count(PcbData.ID).label("count"))
-        .group_by(PcbData.status)
-        .all()
-    )
-    pcb_status_distribution = {(row.status or "Unknown"): row.count for row in status_counts}
+    if not log:
+        raise HTTPException(status_code=404, detail="Task not found for this PCB")
 
-    # ======================================================
-    # 3. PRODUCTION FLOW METRICS
-    # ======================================================
-    flow_stats = (
-        db.query(
-            ProcessFlowMaster.flow_step_id,
-            ProcessFlowMaster.step_name,
-            ProcessFlowMaster.step_order,
-            func.count(PCBAssignment.assignment_id).label("active_wip_count"),
-            func.count(distinct(OperatorStepMapping.operator_staff_no)).label("qualified_staff_count")
+    # -----------------------------
+    # 3️⃣ Validate operator eligibility
+    # -----------------------------
+    allowed = db.query(OperatorStepMapping).filter(
+        OperatorStepMapping.flow_step_id == log.flow_step_id,
+        OperatorStepMapping.operator_staff_no == operator
+    ).first()
+
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Operator not allowed for this task")
+
+    # -----------------------------
+    # 4️⃣ Fetch assignment
+    # -----------------------------
+    assignment = db.query(PCBAssignment).filter(
+        PCBAssignment.assignment_id == req.assignment_id
+    ).first()
+
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    # -----------------------------
+    # 5️⃣ Save operator activity log (AUDIT)
+    # -----------------------------
+    operator_details = db.query(OperatorStepMapping).filter(OperatorStepMapping.operator_staff_no==operator).first()
+    ope_log = db.query(OperatorLog).filter(OperatorLog.PCBserialNoPartNumber==req.PCBserialNoPartNumber, OperatorLog.current_step_id==req.current_step_id).first()
+
+    if not ope_log:
+        operator_log = OperatorLog(
+            PCBserialNoPartNumber=req.PCBserialNoPartNumber,
+            current_step_id=req.current_step_id,
+            assignment_id=req.assignment_id,
+            Task_Status=req.Task_Status,
+            Task_Name=req.Task_Name,
+            operator_staff_no=operator,
+            log_Data=req.log_Data,
+            operator_name = operator_details.operator_name,
+            operator_initial = operator_details.operator_initial,
+            operator_MRL = operator_details.operator_MRL,
+            operator_MRL_Expiry= operator_details.operator_MRL_Expiry,
+            userID=req.userID,
+            userName=req.userName,
+            userRole=req.userRole,
+            userSBU=req.userSBU,
+            userSBUDiv=req.userSBUDiv,
+            start_time=req.start_time,
+            end_time=req.end_time
         )
-        .outerjoin(PCBAssignment, (PCBAssignment.current_step_id == ProcessFlowMaster.flow_step_id) & 
-                                  (PCBAssignment.overall_status == "IN_PROGRESS"))
-        .outerjoin(OperatorStepMapping, OperatorStepMapping.flow_step_id == ProcessFlowMaster.flow_step_id)
-        .group_by(ProcessFlowMaster.flow_step_id, ProcessFlowMaster.step_name, ProcessFlowMaster.step_order)
-        .order_by(ProcessFlowMaster.step_order)
-        .all()
-    )
+        db.add(operator_log)
+    else:
+        ope_log.PCBserialNoPartNumber=req.PCBserialNoPartNumber
+        ope_log.current_step_id=req.current_step_id
+        ope_log.assignment_id=req.assignment_id
+        ope_log.Task_Status=req.Task_Status
+        ope_log.Task_Name=req.Task_Name
+        ope_log.operator_staff_no=operator
+        ope_log.log_Data=req.log_Data
+        ope_log.userID=req.userID
+        ope_log.userName=req.userName
+        ope_log.userRole=req.userRole
+        ope_log.userSBU=req.userSBU
+        ope_log.userSBUDiv=req.userSBUDiv
+        ope_log.end_time=req.end_time
 
-    production_flow = []
-    for row in flow_stats:
-        production_flow.append({
-            "step": row.step_name,
-            "order": row.step_order,
-            "active_pcbs": row.active_wip_count,
-            "staff_capacity": row.qualified_staff_count
-        })
+    # -----------------------------
+    # 6️⃣ Action handling
+    # -----------------------------
+    action = req.Task_Status.upper()
 
-    # ======================================================
-    # 4. OPERATOR LOAD
-    # ======================================================
-    operator_counts = (
-        db.query(
-            PCBProcessLog.assigned_operator_staff_no,
-            func.count(PCBAssignment.assignment_id).label("pcb_count")
-        )
-        .join(PCBAssignment, PCBAssignment.assignment_id == PCBProcessLog.assignment_id)
-        .filter(
-            PCBAssignment.overall_status == "IN_PROGRESS",
-            PCBAssignment.current_step_id == PCBProcessLog.flow_step_id,
-            PCBProcessLog.assigned_operator_staff_no != None
-        )
-        .group_by(PCBProcessLog.assigned_operator_staff_no)
-        .all()
-    )
+    if action == "STARTED":
+        log.start_time = datetime.utcnow()
+        log.process_status = "STARTED"
+        log.assigned_operator_staff_no = operator
 
-    op_names = db.query(OperatorStepMapping.operator_staff_no, OperatorStepMapping.operator_name).distinct().all()
-    name_lookup = {row.operator_staff_no: row.operator_name for row in op_names}
+        # ⭐ IMPORTANT: update current step immediately
+        assignment.current_step_id = log.flow_step_id
 
-    operator_load_data = []
-    for row in operator_counts:
-        staff_no = row.assigned_operator_staff_no
-        operator_load_data.append({
-            "staff_no": staff_no,
-            "name": name_lookup.get(staff_no, f"Staff {staff_no}"),
-            "pcb_count": row.pcb_count
-        })
+    elif action == "PAUSE":
+        log.process_status = "PAUSED"
 
-    # ======================================================
-    # 5. CYCLE TIME ANALYTICS
-    # ======================================================
-    time_logs = (
-        db.query(ProcessFlowMaster.step_name, PCBProcessLog.start_time, PCBProcessLog.end_time)
-        .join(ProcessFlowMaster, ProcessFlowMaster.flow_step_id == PCBProcessLog.flow_step_id)
-        .filter(
-            PCBProcessLog.process_status == "COMPLETED",
-            PCBProcessLog.start_time.isnot(None),
-            PCBProcessLog.end_time.isnot(None)
-        )
-        .all()
-    )
+    elif action == "COMPLETED":
+        log.end_time = datetime.utcnow()
+        log.process_status = "COMPLETED"
 
-    step_durations = {}
-    for row in time_logs:
-        start = parse_db_date(row.start_time)
-        end = parse_db_date(row.end_time)
-        if start and end and end > start:
-            duration = (end - start).total_seconds() / 60.0
-            step_durations.setdefault(row.step_name, []).append(duration)
+        step = db.get(ProcessFlowMaster, log.flow_step_id)
 
-    cycle_time_data = []
-    for step, durations in step_durations.items():
-        if durations:
-            cycle_time_data.append({
-                "step_name": step,
-                "avg_time_minutes": round(statistics.mean(durations), 2),
-                "sample_size": len(durations)
-            })
+        if not step or not step.next_step_id:
+            # Last step → close PCB
+            assignment.overall_status = "COMPLETED"
+            assignment.current_step_id = None
+            db.commit()
+            return {"message": "Final step completed. PCB workflow closed."}
 
-    # ======================================================
-    # 6. BATCH AGING (Stuck PCBs)
-    # ======================================================
-    active_assignments = (
-        db.query(PCBAssignment.assignment_id, PCBAssignment.assigned_pcb_id, 
-                 PCBAssignment.assignment_date, PCBAssignment.current_step_id)
-        .filter(PCBAssignment.overall_status == "IN_PROGRESS")
-        .all()
-    )
+        # Activate next step
+        next_log = db.query(PCBProcessLog).filter(
+            PCBProcessLog.assignment_id == log.assignment_id,
+            PCBProcessLog.flow_step_id == step.next_step_id
+        ).first()
 
-    now = datetime.now()
-    stuck_batches = []
-    total_age = 0
-    
-    for row in active_assignments:
-        assigned_date = parse_db_date(row.assignment_date)
-        if assigned_date:
-            age = (now - assigned_date).total_seconds() / 86400
-            total_age += age
-            if age > 5: # Threshold: 5 days
-                stuck_batches.append({
-                    "assignment_id": row.assignment_id,
-                    "pcb_id": row.assigned_pcb_id,
-                    "age_days": round(age, 1),
-                    "current_step_id": row.current_step_id
-                })
-    
-    avg_age = (total_age / len(active_assignments)) if active_assignments else 0
+        if next_log:
+            next_log.process_status = "PENDING"
 
-    # ======================================================
-    # 7. DAILY ORDER TREND (Velocity) - NEW IMPLEMENTATION
-    # Source: PcbData (createdAt)
-    # ======================================================
-    # Groups orders by Date(createdAt) to see daily input volume
-    
-    daily_trend_query = (
-        db.query(
-            cast(PcbData.createdAt, Date).label("date"),
-            func.count(PcbData.ID).label("count")
-        )
-        .filter(PcbData.createdAt.isnot(None))
-        .group_by(cast(PcbData.createdAt, Date))
-        .order_by(cast(PcbData.createdAt, Date))
-        .all()
-    )
 
-    order_trend_data = [
-        {"date": str(row.date), "count": row.count} 
-        for row in daily_trend_query
-    ]
+        assignment.current_step_id = step.next_step_id
 
-    # ======================================================
-    # FINAL RETURN
-    # ======================================================
+    else:
+        raise HTTPException(status_code=400, detail="Invalid Task_Status")
+
+    db.commit()
+
     return {
-        "pcb_types": pcb_type_distribution,
-        "pcb_statuses": pcb_status_distribution,
-        "production_flow": production_flow,
-        "operator_load": operator_load_data,
-        "cycle_time": cycle_time_data,
-        "batch_aging": {
-            "average_wip_age_days": round(avg_age, 1),
-            "stuck_count": len(stuck_batches),
-            "stuck_list": stuck_batches
-        },
-        "order_trend": order_trend_data  # <--- NEW DATA
+        "message": "Status updated successfully",
+        "current_step_id": assignment.current_step_id,
+        "pcb": req.PCBserialNoPartNumber
     }
+
+
+
+# ---------------------------------------------------------
+# ⭐ NEW ENDPOINT: Get Last Log for Copy/Paste Functionality
+# ---------------------------------------------------------
+@app.get("/operator/last-log")
+def get_last_operator_log(staff_no: str, stage_id: int, db: Session = Depends(get_db)):
+    # Normalize staff number if your system requires it
+    operator = normalize_staff(staff_no) 
+    
+    # Query the Audit Log for the most recent entry by this operator for this stage
+    last_log = db.query(OperatorLog).filter(
+        OperatorLog.operator_staff_no == operator,
+        OperatorLog.current_step_id == stage_id,
+        OperatorLog.log_Data.isnot(None) # Ensure we only get logs with data
+    ).order_by(desc(OperatorLog.end_time)).first()
+
+    if not last_log:
+        return {"log_Data": None, "message": "No previous data found"}
+
+    return {"log_Data": last_log.log_Data}
+
+
+# ---------------------------------------------------------
+# ⭐ NEW ENDPOINT: Get Log by Serial Number (Search)
+# ---------------------------------------------------------
+@app.get("/operator/log-by-serial")
+def get_log_by_serial(target_serial: str, stage_id: int, db: Session = Depends(get_db)):
+    """
+    Fetches the log data for a SPECIFIC PCB at a specific stage.
+    """
+    # We strip whitespace to avoid matching errors
+    target = target_serial.strip()
+
+    # Query the OperatorLog for this specific PCB and Stage
+    target_log = db.query(OperatorLog).filter(
+        OperatorLog.PCBserialNoPartNumber == target,
+        OperatorLog.current_step_id == stage_id,
+        OperatorLog.log_Data.isnot(None)
+    ).order_by(desc(OperatorLog.end_time)).first() # Get most recent if duplicates exist
+
+    if not target_log:
+        return {"log_Data": None, "message": "No data found for this Serial Number"}
+
+    return {"log_Data": target_log.log_Data}
