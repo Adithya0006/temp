@@ -1,335 +1,49 @@
-import React, { useState, useMemo } from 'react';
-import { 
-  Box, Grid, Paper, Typography, Tab, Tabs, Card, CardContent, 
-  LinearProgress, Chip, Table, TableBody, TableCell, TableHead, 
-  TableRow, TextField, Avatar, Stack, Button, Divider, InputAdornment 
-} from '@mui/material';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, 
-  ResponsiveContainer, LineChart, Line, ComposedChart, PieChart, Pie, Cell 
-} from 'recharts';
-import { 
-  PrecisionManufacturing, Group, TrendingUp, WarningAmber, 
-  CheckCircle, Search, Factory, Engineering, LocalShipping 
-} from '@mui/icons-material';
+// [NEW CODE - PASTE THIS]
+useEffect(() => {
+  let intervalId;
 
-// ==========================================
-// 1. DATA CONSTANTS (MAPPED FROM YOUR EXCELS)
-// ==========================================
+  // Define a reusable fetch function inside the effect
+  const fetchDashboardData = async (isBackgroundRefresh = false) => {
+    // 1. Only show the loading spinner on the very first load (not on background updates)
+    if (!isBackgroundRefresh) setLoading(true);
 
-// [From Machine Avl.csv] - The Constraints
-const MACHINE_CONSTANTS = {
-  "SMT Line": { hoursPerDay: 14, cycleTimeHr: 0.2 },   
-  "Cleaning": { hoursPerDay: 14, cycleTimeHr: 0.15 },
-  "AOI":      { hoursPerDay: 7,  cycleTimeHr: 0.25 },
-  "X-Ray":    { hoursPerDay: 7,  cycleTimeHr: 0.5 },
-  "HASS":     { hoursPerDay: 14, cycleTimeHr: 4.0 } // Long duration step
-};
+    const requestParams = { staff_no: user?.id };
 
-// [From tasks.xlsx] - The Workforce
-const STAFF_DATA = [
-  { id: "217166", name: "Santosh H", role: "Supervisor", skill: "ATE 2", active: true },
-  { id: "169",    name: "Santosh Kumar", role: "Operator", skill: "SMT Line", active: true },
-  { id: "2996",   name: "Gagan N V", role: "Operator", skill: "Cleaning", active: false }, // Offline
-  { id: "212325", name: "Ravi Kumar", role: "Operator", skill: "EMI Shielding", active: true },
-];
+    try {
+      const response = await axios.get(fetchTobeAssignedPCB, { params: requestParams });
+      const newData = response.data || {};
 
-// [From Octa.csv & Hexa.csv] - The Live WIP Data
-const INITIAL_WIP_DATA = [
-  { serial: "34021", type: "HEXA", batch: "Batch-01", status: "FPGA Void", step: "HASS", date: "2025-12-29" },
-  { serial: "34022", type: "HEXA", batch: "Batch-01", status: "FPGA Void", step: "HASS", date: "2025-12-29" },
-  { serial: "36153", type: "OCTA", batch: "Batch-02", status: "Active", step: "SMT Operation", date: "2026-01-04" },
-  { serial: "36154", type: "OCTA", batch: "Batch-02", status: "Active", step: "Cleaning", date: "2026-01-05" },
-  // ... (Imagine 100s more rows here)
-];
-
-// ==========================================
-// 2. MAIN COMPONENT
-// ==========================================
-export default function SmartManufacturingDashboard() {
-  const [tabValue, setTabValue] = useState(0);
-
-  return (
-    <Box sx={{ bgcolor: '#f4f6f8', minHeight: '100vh', pb: 4 }}>
-      {/* Header */}
-      <Paper sx={{ px: 3, py: 2, mb: 3, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Box display="flex" alignItems="center" gap={2}>
-            <Avatar sx={{ bgcolor: '#1976d2' }}><Factory /></Avatar>
-            <div>
-                <Typography variant="h5" fontWeight="bold" color="primary">TRDS-2 Production Cockpit</Typography>
-                <Typography variant="caption" color="textSecondary">Integrated Digital Twin (Excel Sync)</Typography>
-            </div>
-        </Box>
-        <Tabs value={tabValue} onChange={(e, v) => setTabValue(v)} indicatorColor="primary">
-          <Tab icon={<TrendingUp />} iconPosition="start" label="Executive Summary" />
-          <Tab icon={<PrecisionManufacturing />} iconPosition="start" label="Capacity Planner" />
-          <Tab icon={<Search />} iconPosition="start" label="Track & Trace" />
-          <Tab icon={<Group />} iconPosition="start" label="Workforce" />
-        </Tabs>
-      </Paper>
-
-      <Box sx={{ px: 3 }}>
-        {tabValue === 0 && <ExecutiveSummary />}
-        {tabValue === 1 && <CapacityPlanner />}
-        {tabValue === 2 && <TrackAndTrace />}
-        {tabValue === 3 && <WorkforceView />}
-      </Box>
-    </Box>
-  );
-}
-
-// ==========================================
-// TAB 1: EXECUTIVE SUMMARY (Dispatch Details.csv)
-// ==========================================
-function ExecutiveSummary() {
-  const kpis = [
-    { title: "Total PO Qty", val: 4000, color: "#1976d2", icon: <LocalShipping /> },
-    { title: "Delivered", val: 8, color: "#2e7d32", icon: <CheckCircle /> },
-    { title: "WIP (In Line)", val: 166, color: "#ed6c02", icon: <Factory /> },
-    { title: "Rework / Held", val: 2, color: "#d32f2f", icon: <WarningAmber /> },
-  ];
-
-  const pieData = [
-    { name: 'Completed', value: 8 },
-    { name: 'WIP', value: 166 },
-    { name: 'Balance', value: 3826 },
-  ];
-  const COLORS = ['#2e7d32', '#ed6c02', '#e0e0e0'];
-
-  return (
-    <Grid container spacing={3}>
-      {/* KPI Cards */}
-      {kpis.map((k, i) => (
-        <Grid item xs={12} sm={6} md={3} key={i}>
-          <Card elevation={2}>
-            <CardContent sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <Typography color="textSecondary" variant="subtitle2">{k.title}</Typography>
-                <Typography variant="h4" fontWeight="bold" sx={{ color: k.color }}>{k.val}</Typography>
-              </div>
-              <Avatar sx={{ bgcolor: `${k.color}22`, color: k.color }}>{k.icon}</Avatar>
-            </CardContent>
-          </Card>
-        </Grid>
-      ))}
-
-      {/* Dispatch vs Balance Chart */}
-      <Grid item xs={12} md={6}>
-        <Paper sx={{ p: 3, height: 400 }}>
-            <Typography variant="h6" gutterBottom>Order Fulfillment Status</Typography>
-            <ResponsiveContainer width="100%" height="90%">
-                <PieChart>
-                    <Pie data={pieData} cx="50%" cy="50%" innerRadius={80} outerRadius={120} dataKey="value">
-                        {pieData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                    </Pie>
-                    <Tooltip />
-                    <Legend verticalAlign="bottom" height={36}/>
-                </PieChart>
-            </ResponsiveContainer>
-        </Paper>
-      </Grid>
-
-      {/* Product Breakdown Table (Octa vs Hexa) */}
-      <Grid item xs={12} md={6}>
-        <Paper sx={{ p: 3, height: 400 }}>
-            <Typography variant="h6" gutterBottom>Product Breakdown</Typography>
-            <Table size="small">
-                <TableHead>
-                    <TableRow sx={{ bgcolor: '#f5f5f5' }}>
-                        <TableCell>Product</TableCell>
-                        <TableCell align="right">Total PO</TableCell>
-                        <TableCell align="right">Dispatched</TableCell>
-                        <TableCell align="right">WIP</TableCell>
-                    </TableRow>
-                </TableHead>
-                <TableBody>
-                    <TableRow>
-                        <TableCell fontWeight="bold">OCTA Pack</TableCell>
-                        <TableCell align="right">2,388</TableCell>
-                        <TableCell align="right">0</TableCell>
-                        <TableCell align="right"><Chip label="148" color="warning" size="small"/></TableCell>
-                    </TableRow>
-                    <TableRow>
-                        <TableCell fontWeight="bold">HEXA Pack</TableCell>
-                        <TableCell align="right">1,612</TableCell>
-                        <TableCell align="right">8</TableCell>
-                        <TableCell align="right"><Chip label="18" color="warning" size="small"/></TableCell>
-                    </TableRow>
-                </TableBody>
-            </Table>
-        </Paper>
-      </Grid>
-    </Grid>
-  );
-}
-
-// ==========================================
-// TAB 2: CAPACITY PLANNER (The Interactive Excel)
-// ==========================================
-function CapacityPlanner() {
-  // Initial Schedule from "Schedule Vs Resource.csv"
-  const [schedule, setSchedule] = useState([
-    { month: 'Oct 2025', days: 22, demand: 55 },
-    { month: 'Nov 2025', days: 20, demand: 40 },
-    { month: 'Dec 2025', days: 21, demand: 85 },
-    { month: 'Jan 2026', days: 23, demand: 100 },
-  ]);
-
-  const calculatedData = useMemo(() => {
-    return schedule.map(m => {
-        const item = { name: m.month };
-        // Calculate SMT Line Load
-        const smtCap = m.days * MACHINE_CONSTANTS["SMT Line"].hoursPerDay;
-        const smtLoad = m.demand * MACHINE_CONSTANTS["SMT Line"].cycleTimeHr;
-        item.SMT = Math.round((smtLoad / smtCap) * 100);
-        
-        // Calculate X-Ray Load
-        const xrayCap = m.days * MACHINE_CONSTANTS["X-Ray"].hoursPerDay;
-        const xrayLoad = m.demand * MACHINE_CONSTANTS["X-Ray"].cycleTimeHr;
-        item.XRay = Math.round((xrayLoad / xrayCap) * 100);
-
-        return item;
-    });
-  }, [schedule]);
-
-  const handleChange = (idx, val) => {
-    const newSched = [...schedule];
-    newSched[idx].demand = Number(val);
-    setSchedule(newSched);
+      // 2. SMART UPDATE: Compare new data with current state to prevent unnecessary re-renders
+      setTaskGraph((prevData) => {
+        // We compare the stringified versions. If they match, we return 'prevData'.
+        // React sees the state hasn't changed and skips the re-render.
+        if (JSON.stringify(prevData) !== JSON.stringify(newData)) {
+          return newData; // Data Changed! React will update the screen.
+        }
+        return prevData; // No Change! React does nothing.
+      });
+      
+    } catch (err) {
+      console.error("Error fetching data:", err);
+    } finally {
+      // Only turn off loading if we turned it on (i.e., not background refresh)
+      if (!isBackgroundRefresh) setLoading(false);
+    }
   };
 
-  return (
-    <Grid container spacing={3}>
-      <Grid item xs={12} md={4}>
-        <Paper sx={{ p: 2 }}>
-            <Typography variant="h6" gutterBottom>Production Scheduler</Typography>
-            <Typography variant="caption" color="textSecondary">Edit "Target" to simulate load</Typography>
-            <Table size="small" sx={{ mt: 2 }}>
-                <TableHead><TableRow><TableCell>Month</TableCell><TableCell>Target (Qty)</TableCell></TableRow></TableHead>
-                <TableBody>
-                    {schedule.map((row, i) => (
-                        <TableRow key={row.month}>
-                            <TableCell>{row.month}</TableCell>
-                            <TableCell>
-                                <TextField 
-                                    size="small" type="number" value={row.demand} 
-                                    onChange={(e) => handleChange(i, e.target.value)}
-                                    InputProps={{ style: { fontWeight: 'bold', color: '#1976d2' } }}
-                                />
-                            </TableCell>
-                        </TableRow>
-                    ))}
-                </TableBody>
-            </Table>
-        </Paper>
-      </Grid>
-      <Grid item xs={12} md={8}>
-        <Paper sx={{ p: 2, height: 400 }}>
-            <Typography variant="h6">Machine Utilization Forecast (%)</Typography>
-            <ResponsiveContainer width="100%" height="90%">
-                <ComposedChart data={calculatedData} margin={{ top: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" />
-                    <YAxis label={{ value: '% Load', angle: -90, position: 'insideLeft' }}/>
-                    <Tooltip />
-                    <Legend />
-                    {/* The "Red Line" limit */}
-                    <Line type="monotone" dataKey="limit" stroke="red" dot={false} strokeDasharray="5 5" />
-                    <Bar dataKey="SMT" name="SMT Line" fill="#8884d8" />
-                    <Bar dataKey="XRay" name="X-Ray" fill="#82ca9d" />
-                </ComposedChart>
-            </ResponsiveContainer>
-        </Paper>
-      </Grid>
-    </Grid>
-  );
-}
+  // Logic: Only run this if we are actively looking at the dashboard
+  if (currentView === "dashboard") {
+    // A. Run immediately so the user sees data right away
+    fetchDashboardData(false);
 
-// ==========================================
-// TAB 3: TRACK & TRACE (Hexa.csv / Octa.csv)
-// ==========================================
-function TrackAndTrace() {
-  const [search, setSearch] = useState("");
-  
-  const filteredWIP = INITIAL_WIP_DATA.filter(item => 
-    item.serial.includes(search) || item.step.toLowerCase().includes(search.toLowerCase())
-  );
+    // B. Set up a timer to run silently every 5 seconds
+    intervalId = setInterval(() => {
+      fetchDashboardData(true); // true = silent mode (no spinner)
+    }, 5000);
+  }
 
-  return (
-    <Paper sx={{ p: 3 }}>
-        <Box display="flex" justifyContent="space-between" mb={2}>
-            <Typography variant="h6">Live Serial Number Tracking</Typography>
-            <TextField 
-                size="small" 
-                placeholder="Search Serial or Step..." 
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                InputProps={{ startAdornment: <InputAdornment position="start"><Search /></InputAdornment> }}
-            />
-        </Box>
-        <Table>
-            <TableHead>
-                <TableRow sx={{ bgcolor: '#eee' }}>
-                    <TableCell>Serial No</TableCell>
-                    <TableCell>Type</TableCell>
-                    <TableCell>Current Step</TableCell>
-                    <TableCell>Status</TableCell>
-                    <TableCell>Last Update</TableCell>
-                </TableRow>
-            </TableHead>
-            <TableBody>
-                {filteredWIP.map((row) => (
-                    <TableRow key={row.serial}>
-                        <TableCell sx={{ fontWeight: 'bold' }}>{row.serial}</TableCell>
-                        <TableCell>{row.type}</TableCell>
-                        <TableCell>
-                            <Chip icon={<Engineering fontSize="small"/>} label={row.step} variant="outlined" />
-                        </TableCell>
-                        <TableCell>
-                            <Chip 
-                                label={row.status} 
-                                color={row.status === "Active" ? "success" : "error"} 
-                                size="small" 
-                            />
-                        </TableCell>
-                        <TableCell>{row.date}</TableCell>
-                    </TableRow>
-                ))}
-            </TableBody>
-        </Table>
-    </Paper>
-  );
-}
-
-// ==========================================
-// TAB 4: WORKFORCE (tasks.xlsx)
-// ==========================================
-function WorkforceView() {
-    return (
-        <Paper sx={{ p: 3 }}>
-            <Typography variant="h6" gutterBottom>Operator Availability & Skills</Typography>
-            <Grid container spacing={2}>
-                {STAFF_DATA.map((staff) => (
-                    <Grid item xs={12} sm={6} md={3} key={staff.id}>
-                        <Card variant="outlined" sx={{ borderColor: staff.active ? 'green' : 'grey.300' }}>
-                            <CardContent>
-                                <Stack direction="row" spacing={2} alignItems="center">
-                                    <Avatar sx={{ bgcolor: staff.active ? '#2e7d32' : '#bdbdbd' }}>
-                                        {staff.name.charAt(0)}
-                                    </Avatar>
-                                    <Box>
-                                        <Typography variant="subtitle2">{staff.name}</Typography>
-                                        <Typography variant="caption" display="block">{staff.role}</Typography>
-                                        <Chip label={staff.skill} size="small" sx={{ mt: 1 }} />
-                                    </Box>
-                                </Stack>
-                            </CardContent>
-                        </Card>
-                    </Grid>
-                ))}
-            </Grid>
-        </Paper>
-    );
-}
+  // Cleanup: Stop the timer if the user leaves the dashboard tab
+  return () => {
+    if (intervalId) clearInterval(intervalId);
+  };
+}, [currentView]);
