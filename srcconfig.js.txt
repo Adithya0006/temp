@@ -47,3 +47,394 @@ useEffect(() => {
     if (intervalId) clearInterval(intervalId);
   };
 }, [currentView]);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Box, 
+  Grid, 
+  Card, 
+  CardContent, 
+  Typography, 
+  Tab, 
+  Tabs, 
+  Table, 
+  TableBody, 
+  TableCell, 
+  TableContainer, 
+  TableHead, 
+  TableRow, 
+  Paper, 
+  TextField, 
+  InputAdornment, 
+  Chip, 
+  CircularProgress,
+  IconButton,
+  TablePagination,
+  useTheme
+} from '@mui/material';
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line, Legend 
+} from 'recharts';
+import { 
+  Inventory, 
+  LocalShipping, 
+  Autorenew, 
+  Warning, 
+  Search, 
+  CheckCircle, 
+  HourglassEmpty, 
+  Timeline,
+  Assessment
+} from '@mui/icons-material';
+
+// --- DATA SOURCE (Simulating API Response) ---
+const DASHBOARD_DATA = {
+  "summary": {
+    "octa": { "wip": 148, "po": 2388, "rework": 2, "dispatched": 0, "line": 150 },
+    "hexa": { "wip": 18, "po": 1612, "rework": 0, "dispatched": 8, "line": 18 },
+    "total": { "po": 4000, "delivered": 8, "wip": 166, "rework": 2 }
+  },
+  "stages": {
+    "octa": [
+      { name: "Not Started", value: 2000 },
+      { name: "Cleaning & Baking", value: 30 },
+      { name: "QA Inspection", value: 41 },
+      { name: "Connector Assy", value: 22 },
+      { name: "HSTT (17 Hours)", value: 21 },
+      { name: "Masking", value: 15 },
+      { name: "AOI Correction", value: 8 },
+      { name: "Flying Probe", value: 7 },
+      { name: "Auto Cleaning", value: 6 }
+    ],
+    "hexa": [
+      { name: "Not Started", value: 1594 },
+      { name: "Final Control", value: 17 },
+      { name: "Completed", value: 8 },
+      { name: "ATE1 & ATE2", value: 1 }
+    ]
+  },
+  "dispatch": [
+    { "batch": "Batch-01", "date": "2025-12-29", "hexa": 8, "octa": 0, "total": 8 }
+  ],
+  "items": [
+    // Sample of the full dataset extracted from your Excel
+    { "id": "35911", "type": "OCTA", "stage": "Masking", "batch": "", "remarks": "" },
+    { "id": "35912", "type": "OCTA", "stage": "Masking", "batch": "", "remarks": "" },
+    { "id": "35926", "type": "OCTA", "stage": "Auto Cleaning & Ionic Cont", "batch": "", "remarks": "" },
+    { "id": "35932", "type": "OCTA", "stage": "Connector Assy + X Ray", "batch": "", "remarks": "" },
+    { "id": "35939", "type": "OCTA", "stage": "Connector Assy + X Ray", "batch": "", "remarks": "FPGA Void" },
+    { "id": "35953", "type": "OCTA", "stage": "QA Inspection", "batch": "", "remarks": "FPGA Void" },
+    { "id": "35960", "type": "OCTA", "stage": "HSTT (17 Hours)", "batch": "", "remarks": "" },
+    { "id": "35977", "type": "OCTA", "stage": "AOI Correction", "batch": "", "remarks": "" },
+    { "id": "34021", "type": "HEXA", "stage": "Completed", "batch": "Batch-01", "remarks": "FPGA Void" },
+    { "id": "34029", "type": "HEXA", "stage": "ATE1 & ATE2", "batch": "", "remarks": "" },
+    { "id": "34035", "type": "HEXA", "stage": "Final Control", "batch": "", "remarks": "" },
+    // ... Assume 4000+ items here
+  ]
+};
+
+// --- COMPONENTS ---
+
+// 1. KPI Card Component
+const KPICard = ({ title, value, subtitle, icon, color }) => (
+  <Card sx={{ height: '100%', boxShadow: 2, display: 'flex', alignItems: 'center', p: 1 }}>
+    <Box sx={{ p: 2, borderRadius: 2, bgcolor: `${color}.light`, color: `${color}.main`, mr: 2 }}>
+      {icon}
+    </Box>
+    <CardContent sx={{ p: '16px !important', flexGrow: 1 }}>
+      <Typography variant="body2" color="text.secondary" fontWeight="medium">
+        {title}
+      </Typography>
+      <Typography variant="h4" component="div" fontWeight="bold" color="text.primary">
+        {value}
+      </Typography>
+      {subtitle && (
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+          {subtitle}
+        </Typography>
+      )}
+    </CardContent>
+  </Card>
+);
+
+// 2. Charts Section
+const StageChart = ({ data, title, color }) => (
+  <Paper sx={{ p: 3, height: 400, boxShadow: 2, borderRadius: 2 }}>
+    <Typography variant="h6" gutterBottom fontWeight="bold" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Assessment fontSize="small" color="action" />
+      {title}
+    </Typography>
+    <ResponsiveContainer width="100%" height="90%">
+      <BarChart data={data} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+        <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+        <XAxis type="number" />
+        <YAxis dataKey="name" type="category" width={140} tick={{ fontSize: 12 }} />
+        <RechartsTooltip cursor={{ fill: 'transparent' }} />
+        <Bar dataKey="value" fill={color} radius={[0, 4, 4, 0]} barSize={24} />
+      </BarChart>
+    </ResponsiveContainer>
+  </Paper>
+);
+
+const DispatchTimeline = ({ data }) => (
+  <Paper sx={{ p: 3, height: 400, boxShadow: 2, borderRadius: 2 }}>
+    <Typography variant="h6" gutterBottom fontWeight="bold" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Timeline fontSize="small" color="action" />
+      Dispatch Timeline
+    </Typography>
+    <ResponsiveContainer width="100%" height="90%">
+      <LineChart data={data}>
+        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+        <XAxis dataKey="date" />
+        <YAxis />
+        <RechartsTooltip />
+        <Legend />
+        <Line type="monotone" dataKey="total" stroke="#2e7d32" strokeWidth={3} name="Total" dot={{ r: 4 }} />
+        <Line type="monotone" dataKey="hexa" stroke="#7b1fa2" strokeWidth={2} name="Hexa" />
+      </LineChart>
+    </ResponsiveContainer>
+  </Paper>
+);
+
+// 3. Data Table Component
+const StatusTable = ({ items }) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+
+  const filteredItems = useMemo(() => {
+    return items.filter(item => 
+      item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.stage.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.batch.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [items, searchTerm]);
+
+  const handleChangePage = (event, newPage) => setPage(newPage);
+  const handleChangeRowsPerPage = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10));
+    setPage(0);
+  };
+
+  const getStatusChip = (stage) => {
+    if (stage === 'Completed') return <Chip icon={<CheckCircle />} label="Done" color="success" size="small" variant="outlined" />;
+    if (stage === 'Not Started') return <Chip icon={<HourglassEmpty />} label="Pending" color="default" size="small" variant="outlined" />;
+    return <Chip icon={<Autorenew />} label="In Progress" color="warning" size="small" variant="outlined" />;
+  };
+
+  return (
+    <Paper sx={{ width: '100%', mb: 2, boxShadow: 2, borderRadius: 2, overflow: 'hidden' }}>
+      {/* Toolbar */}
+      <Box sx={{ p: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', bgcolor: 'background.default' }}>
+        <Typography variant="h6" component="div" fontWeight="bold">
+          Detailed Module Status
+        </Typography>
+        <TextField
+          variant="outlined"
+          size="small"
+          placeholder="Search Serial, Stage..."
+          value={searchTerm}
+          onChange={(e) => { setSearchTerm(e.target.value); setPage(0); }}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <Search color="action" />
+              </InputAdornment>
+            ),
+          }}
+          sx={{ bgcolor: 'white' }}
+        />
+      </Box>
+
+      {/* Table */}
+      <TableContainer sx={{ maxHeight: 600 }}>
+        <Table stickyHeader>
+          <TableHead>
+            <TableRow>
+              <TableCell fontWeight="bold">Serial No</TableCell>
+              <TableCell>Type</TableCell>
+              <TableCell>Current Stage</TableCell>
+              <TableCell>Batch</TableCell>
+              <TableCell>Remarks</TableCell>
+              <TableCell align="center">Status</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {filteredItems
+              .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+              .map((row, index) => (
+                <TableRow hover key={index}>
+                  <TableCell component="th" scope="row" sx={{ fontWeight: 'medium' }}>
+                    {row.id}
+                  </TableCell>
+                  <TableCell>
+                    <Chip 
+                      label={row.type} 
+                      size="small" 
+                      color={row.type === 'OCTA' ? 'primary' : 'secondary'} 
+                      sx={{ borderRadius: 1, fontWeight: 'bold' }} 
+                    />
+                  </TableCell>
+                  <TableCell>{row.stage}</TableCell>
+                  <TableCell>{row.batch || '-'}</TableCell>
+                  <TableCell sx={{ color: 'error.main' }}>{row.remarks}</TableCell>
+                  <TableCell align="center">{getStatusChip(row.stage)}</TableCell>
+                </TableRow>
+              ))}
+            {filteredItems.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={6} align="center" sx={{ py: 3 }}>
+                  <Typography color="textSecondary">No records found matching your search.</Typography>
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      <TablePagination
+        rowsPerPageOptions={[10, 25, 50]}
+        component="div"
+        count={filteredItems.length}
+        rowsPerPage={rowsPerPage}
+        page={page}
+        onPageChange={handleChangePage}
+        onRowsPerPageChange={handleChangeRowsPerPage}
+      />
+    </Paper>
+  );
+};
+
+// --- MAIN LAYOUT COMPONENT ---
+export default function MaterialDashboard() {
+  const [data, setData] = useState(null);
+  const [tabValue, setTabValue] = useState(0);
+  const theme = useTheme();
+
+  useEffect(() => {
+    // SIMULATED API CALL
+    // In production: axios.get('/api/production-status').then(res => setData(res.data))
+    const fetchData = async () => {
+      // Simulate network delay
+      await new Promise(resolve => setTimeout(resolve, 800));
+      setData(DASHBOARD_DATA);
+    };
+    fetchData();
+  }, []);
+
+  const handleTabChange = (event, newValue) => {
+    setTabValue(newValue);
+  };
+
+  if (!data) {
+    return (
+      <Box sx={{ display: 'flex', height: '100vh', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: 2 }}>
+        <CircularProgress size={60} thickness={4} />
+        <Typography variant="h6" color="textSecondary">Loading Dashboard Data...</Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ flexGrow: 1, p: 3, bgcolor: '#f5f5f5', minHeight: '100vh' }}>
+      {/* Header */}
+      <Box sx={{ mb: 4 }}>
+        <Typography variant="h4" gutterBottom fontWeight="bold" color="primary">
+          Project Synthesis TRDS-2
+        </Typography>
+        <Typography variant="subtitle1" color="textSecondary">
+          Production Status Dashboard • Order 04012026
+        </Typography>
+      </Box>
+
+      {/* KPI Cards */}
+      <Grid container spacing={3} sx={{ mb: 4 }}>
+        <Grid item xs={12} sm={6} md={3}>
+          <KPICard 
+            title="Total PO Quantity" 
+            value={data.summary.total.po} 
+            subtitle={`Octa: ${data.summary.octa.po} | Hexa: ${data.summary.hexa.po}`}
+            icon={<Inventory fontSize="large" />} 
+            color="primary" 
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <KPICard 
+            title="Delivered" 
+            value={data.summary.total.delivered} 
+            subtitle={`Progress: ${((data.summary.total.delivered / data.summary.total.po) * 100).toFixed(2)}%`}
+            icon={<LocalShipping fontSize="large" />} 
+            color="success" 
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <KPICard 
+            title="Work In Progress" 
+            value={data.summary.total.wip} 
+            subtitle="Active on Assembly Line" 
+            icon={<Autorenew fontSize="large" />} 
+            color="warning" 
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <KPICard 
+            title="Rework / Held" 
+            value={data.summary.total.rework} 
+            subtitle="Requires Immediate Attention" 
+            icon={<Warning fontSize="large" />} 
+            color="error" 
+          />
+        </Grid>
+      </Grid>
+
+      {/* Tabs */}
+      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+        <Tabs value={tabValue} onChange={handleTabChange} aria-label="dashboard tabs">
+          <Tab label="Overview" />
+          <Tab label="Detailed List" />
+        </Tabs>
+      </Box>
+
+      {/* Tab Panels */}
+      {tabValue === 0 && (
+        <Grid container spacing={3}>
+          <Grid item xs={12} md={6}>
+            <StageChart 
+              title="Octa Module Status Distribution" 
+              data={data.stages.octa} 
+              color={theme.palette.primary.main} 
+            />
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <StageChart 
+              title="Hexa Module Status Distribution" 
+              data={data.stages.hexa} 
+              color={theme.palette.secondary.main} 
+            />
+          </Grid>
+          <Grid item xs={12}>
+            <DispatchTimeline data={data.dispatch} />
+          </Grid>
+        </Grid>
+      )}
+
+      {tabValue === 1 && (
+        <StatusTable items={data.items} />
+      )}
+    </Box>
+  );
+}
+
