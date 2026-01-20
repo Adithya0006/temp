@@ -62,378 +62,701 @@ useEffect(() => {
 
 
 
-import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  Box, 
-  Grid, 
-  Card, 
-  CardContent, 
-  Typography, 
-  Tab, 
-  Tabs, 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableContainer, 
-  TableHead, 
-  TableRow, 
-  Paper, 
-  TextField, 
-  InputAdornment, 
-  Chip, 
-  CircularProgress,
+
+
+
+
+
+
+
+
+
+
+
+
+
+// AddProject.js - Fixed: Removed Aggressive Deduplication
+import React, { useState, useEffect, useRef } from "react";
+import { useSelector } from "react-redux";
+import * as XLSX from "xlsx";
+import axios from "axios";
+
+// =====================
+// MUI COMPONENTS
+// =====================
+import {
+  Box,
+  Typography,
+  Button,
+  Grid,
   IconButton,
-  TablePagination,
-  useTheme
-} from '@mui/material';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line, Legend 
-} from 'recharts';
-import { 
-  Inventory, 
-  LocalShipping, 
-  Autorenew, 
-  Warning, 
-  Search, 
-  CheckCircle, 
-  HourglassEmpty, 
-  Timeline,
-  Assessment
-} from '@mui/icons-material';
+  Table,
+  TableHead,
+  TableRow,
+  TableCell,
+  TableBody,
+  TextField,
+  Checkbox,
+  Snackbar,
+  Alert,
+  Tabs,
+  Tab,
+  Paper,
+  TableContainer,
+  Stack,
+  Divider,
+  Chip,
+  useTheme,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  LinearProgress,
+} from "@mui/material";
 
-// --- DATA SOURCE (Simulating API Response) ---
-const DASHBOARD_DATA = {
-  "summary": {
-    "octa": { "wip": 148, "po": 2388, "rework": 2, "dispatched": 0, "line": 150 },
-    "hexa": { "wip": 18, "po": 1612, "rework": 0, "dispatched": 8, "line": 18 },
-    "total": { "po": 4000, "delivered": 8, "wip": 166, "rework": 2 }
-  },
-  "stages": {
-    "octa": [
-      { name: "Not Started", value: 2000 },
-      { name: "Cleaning & Baking", value: 30 },
-      { name: "QA Inspection", value: 41 },
-      { name: "Connector Assy", value: 22 },
-      { name: "HSTT (17 Hours)", value: 21 },
-      { name: "Masking", value: 15 },
-      { name: "AOI Correction", value: 8 },
-      { name: "Flying Probe", value: 7 },
-      { name: "Auto Cleaning", value: 6 }
-    ],
-    "hexa": [
-      { name: "Not Started", value: 1594 },
-      { name: "Final Control", value: 17 },
-      { name: "Completed", value: 8 },
-      { name: "ATE1 & ATE2", value: 1 }
-    ]
-  },
-  "dispatch": [
-    { "batch": "Batch-01", "date": "2025-12-29", "hexa": 8, "octa": 0, "total": 8 }
+// =====================
+// MUI ICONS
+// =====================
+import FilterListIcon from "@mui/icons-material/FilterList";
+import AddIcon from "@mui/icons-material/Add";
+import DeleteIcon from "@mui/icons-material/Delete";
+import ReplayIcon from "@mui/icons-material/Replay";
+import CloudUploadIcon from "@mui/icons-material/CloudUpload";
+import StorageIcon from "@mui/icons-material/Storage";
+import BlockIcon from "@mui/icons-material/Block";
+import SaveIcon from "@mui/icons-material/Save";
+import AssignmentReturnIcon from "@mui/icons-material/AssignmentReturn";
+import CategoryIcon from "@mui/icons-material/Category";
+import DownloadIcon from "@mui/icons-material/Download"; 
+
+
+// ==========================================
+// 1. CENTRALIZED CONFIGURATION
+// ==========================================
+const APP_CONFIG = {
+  EXCEL_START_ROW: 1, 
+  UPLOAD_BATCH_SIZE: 50, 
+
+  DISPLAY_COLUMNS: ['serialNo', 'partNumber', 'productionOrder', 'quantity'],
+  
+  IGNORED_COLUMNS: [
+    "SMT Status", "SAP Material issue", "Labour hour booking",
+    "Type", "id", "_id", "status", "__v", "createdAt", "updatedAt", "source", "type"
   ],
-  "items": [
-    // Sample of the full dataset extracted from your Excel
-    { "id": "35911", "type": "OCTA", "stage": "Masking", "batch": "", "remarks": "" },
-    { "id": "35912", "type": "OCTA", "stage": "Masking", "batch": "", "remarks": "" },
-    { "id": "35926", "type": "OCTA", "stage": "Auto Cleaning & Ionic Cont", "batch": "", "remarks": "" },
-    { "id": "35932", "type": "OCTA", "stage": "Connector Assy + X Ray", "batch": "", "remarks": "" },
-    { "id": "35939", "type": "OCTA", "stage": "Connector Assy + X Ray", "batch": "", "remarks": "FPGA Void" },
-    { "id": "35953", "type": "OCTA", "stage": "QA Inspection", "batch": "", "remarks": "FPGA Void" },
-    { "id": "35960", "type": "OCTA", "stage": "HSTT (17 Hours)", "batch": "", "remarks": "" },
-    { "id": "35977", "type": "OCTA", "stage": "AOI Correction", "batch": "", "remarks": "" },
-    { "id": "34021", "type": "HEXA", "stage": "Completed", "batch": "Batch-01", "remarks": "FPGA Void" },
-    { "id": "34029", "type": "HEXA", "stage": "ATE1 & ATE2", "batch": "", "remarks": "" },
-    { "id": "34035", "type": "HEXA", "stage": "Final Control", "batch": "", "remarks": "" },
-    // ... Assume 4000+ items here
-  ]
+
+  PROJECT_TYPES: [
+    { value: "HEXA", label: "HEXA" },
+    { value: "OCTA", label: "OCTA" }
+  ],
+
+  FILTER_CATEGORIES: ["All", "HEXA-CHILD", "HEXA-MAIN", "OCTA-CHILD", "OCTA-MAIN"]
 };
 
-// --- COMPONENTS ---
+// ==========================================
+// 2. HELPER FUNCTIONS
+// ==========================================
 
-// 1. KPI Card Component
-const KPICard = ({ title, value, subtitle, icon, color }) => (
-  <Card sx={{ height: '100%', boxShadow: 2, display: 'flex', alignItems: 'center', p: 1 }}>
-    <Box sx={{ p: 2, borderRadius: 2, bgcolor: `${color}.light`, color: `${color}.main`, mr: 2 }}>
-      {icon}
-    </Box>
-    <CardContent sx={{ p: '16px !important', flexGrow: 1 }}>
-      <Typography variant="body2" color="text.secondary" fontWeight="medium">
-        {title}
-      </Typography>
-      <Typography variant="h4" component="div" fontWeight="bold" color="text.primary">
-        {value}
-      </Typography>
-      {subtitle && (
-        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-          {subtitle}
-        </Typography>
-      )}
-    </CardContent>
-  </Card>
-);
-
-// 2. Charts Section
-const StageChart = ({ data, title, color }) => (
-  <Paper sx={{ p: 3, height: 400, boxShadow: 2, borderRadius: 2 }}>
-    <Typography variant="h6" gutterBottom fontWeight="bold" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-      <Assessment fontSize="small" color="action" />
-      {title}
-    </Typography>
-    <ResponsiveContainer width="100%" height="90%">
-      <BarChart data={data} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
-        <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-        <XAxis type="number" />
-        <YAxis dataKey="name" type="category" width={140} tick={{ fontSize: 12 }} />
-        <RechartsTooltip cursor={{ fill: 'transparent' }} />
-        <Bar dataKey="value" fill={color} radius={[0, 4, 4, 0]} barSize={24} />
-      </BarChart>
-    </ResponsiveContainer>
-  </Paper>
-);
-
-const DispatchTimeline = ({ data }) => (
-  <Paper sx={{ p: 3, height: 400, boxShadow: 2, borderRadius: 2 }}>
-    <Typography variant="h6" gutterBottom fontWeight="bold" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-      <Timeline fontSize="small" color="action" />
-      Dispatch Timeline
-    </Typography>
-    <ResponsiveContainer width="100%" height="90%">
-      <LineChart data={data}>
-        <CartesianGrid strokeDasharray="3 3" vertical={false} />
-        <XAxis dataKey="date" />
-        <YAxis />
-        <RechartsTooltip />
-        <Legend />
-        <Line type="monotone" dataKey="total" stroke="#2e7d32" strokeWidth={3} name="Total" dot={{ r: 4 }} />
-        <Line type="monotone" dataKey="hexa" stroke="#7b1fa2" strokeWidth={2} name="Hexa" />
-      </LineChart>
-    </ResponsiveContainer>
-  </Paper>
-);
-
-// 3. Data Table Component
-const StatusTable = ({ items }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(10);
-
-  const filteredItems = useMemo(() => {
-    return items.filter(item => 
-      item.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.stage.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.batch.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  }, [items, searchTerm]);
-
-  const handleChangePage = (event, newPage) => setPage(newPage);
-  const handleChangeRowsPerPage = (event) => {
-    setRowsPerPage(parseInt(event.target.value, 10));
-    setPage(0);
-  };
-
-  const getStatusChip = (stage) => {
-    if (stage === 'Completed') return <Chip icon={<CheckCircle />} label="Done" color="success" size="small" variant="outlined" />;
-    if (stage === 'Not Started') return <Chip icon={<HourglassEmpty />} label="Pending" color="default" size="small" variant="outlined" />;
-    return <Chip icon={<Autorenew />} label="In Progress" color="warning" size="small" variant="outlined" />;
-  };
-
-  return (
-    <Paper sx={{ width: '100%', mb: 2, boxShadow: 2, borderRadius: 2, overflow: 'hidden' }}>
-      {/* Toolbar */}
-      <Box sx={{ p: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', bgcolor: 'background.default' }}>
-        <Typography variant="h6" component="div" fontWeight="bold">
-          Detailed Module Status
-        </Typography>
-        <TextField
-          variant="outlined"
-          size="small"
-          placeholder="Search Serial, Stage..."
-          value={searchTerm}
-          onChange={(e) => { setSearchTerm(e.target.value); setPage(0); }}
-          InputProps={{
-            startAdornment: (
-              <InputAdornment position="start">
-                <Search color="action" />
-              </InputAdornment>
-            ),
-          }}
-          sx={{ bgcolor: 'white' }}
-        />
-      </Box>
-
-      {/* Table */}
-      <TableContainer sx={{ maxHeight: 600 }}>
-        <Table stickyHeader>
-          <TableHead>
-            <TableRow>
-              <TableCell fontWeight="bold">Serial No</TableCell>
-              <TableCell>Type</TableCell>
-              <TableCell>Current Stage</TableCell>
-              <TableCell>Batch</TableCell>
-              <TableCell>Remarks</TableCell>
-              <TableCell align="center">Status</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {filteredItems
-              .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-              .map((row, index) => (
-                <TableRow hover key={index}>
-                  <TableCell component="th" scope="row" sx={{ fontWeight: 'medium' }}>
-                    {row.id}
-                  </TableCell>
-                  <TableCell>
-                    <Chip 
-                      label={row.type} 
-                      size="small" 
-                      color={row.type === 'OCTA' ? 'primary' : 'secondary'} 
-                      sx={{ borderRadius: 1, fontWeight: 'bold' }} 
-                    />
-                  </TableCell>
-                  <TableCell>{row.stage}</TableCell>
-                  <TableCell>{row.batch || '-'}</TableCell>
-                  <TableCell sx={{ color: 'error.main' }}>{row.remarks}</TableCell>
-                  <TableCell align="center">{getStatusChip(row.stage)}</TableCell>
-                </TableRow>
-              ))}
-            {filteredItems.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={6} align="center" sx={{ py: 3 }}>
-                  <Typography color="textSecondary">No records found matching your search.</Typography>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </TableContainer>
-      <TablePagination
-        rowsPerPageOptions={[10, 25, 50]}
-        component="div"
-        count={filteredItems.length}
-        rowsPerPage={rowsPerPage}
-        page={page}
-        onPageChange={handleChangePage}
-        onRowsPerPageChange={handleChangeRowsPerPage}
-      />
-    </Paper>
-  );
+const getApiBaseUrl = (configDetails) => {
+  if (configDetails?.project?.[0]?.ServerIP?.[0]?.NodeServerIP) {
+    return configDetails.project[0].ServerIP[0].NodeServerIP;
+  }
+  if (process.env.REACT_APP_API_URL) {
+    return process.env.REACT_APP_API_URL;
+  }
+  return "http://localhost:8082"; 
 };
 
-// --- MAIN LAYOUT COMPONENT ---
-export default function MaterialDashboard() {
-  const [data, setData] = useState(null);
-  const [tabValue, setTabValue] = useState(0);
+const expandExcelRows = (rawJson, serialCol) => {
+  const expanded = [];
+  
+  rawJson.forEach((row, index) => {
+    const val = row[serialCol]; 
+    if (!val || String(val).trim() === "") return;
+
+    const rangeMatch = String(val).match(/^(\d+)\s*-\s*(\d+)$/); 
+
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1], 10);
+      const end = parseInt(rangeMatch[2], 10);
+      
+      if (end >= start && (end - start) < 10000) {
+        for (let i = start; i <= end; i++) {
+          const newRow = { ...row }; 
+          newRow[serialCol] = i.toString(); 
+          newRow.id = `EXP-${index}-${i}`;  
+          if (newRow["Quantity"] !== undefined) newRow["Quantity"] = 1; 
+          expanded.push(newRow);
+        }
+        return; 
+      }
+    }
+    expanded.push({ ...row, id: `ROW-${index}` });
+  });
+
+  return expanded;
+};
+
+
+// ==========================================
+// MAIN COMPONENT
+// ==========================================
+export default function AddProject() {
   const theme = useTheme();
+  const configDetails = useSelector(state => state.MROTDataSavingReducer.configDetails);
+  const API_BASE = getApiBaseUrl(configDetails);
+
+  // State
+  const [tab, setTab] = useState("upload"); 
+  const [selectedType, setSelectedType] = useState(APP_CONFIG.PROJECT_TYPES[0].value); 
+  const [uploadSource, setUploadSource] = useState(""); 
+  const [fileName, setFileName] = useState("");
+
+  // Refs & Data
+  const fullDataRef = useRef([]); 
+  const [previewRows, setPreviewRows] = useState([]); 
+  const [previewColumns, setPreviewColumns] = useState([]); 
+  const [serialColumn, setSerialColumn] = useState(""); 
+  
+  // Lists
+  const [masterList, setMasterList] = useState([]); 
+  const [inactiveList, setInactiveList] = useState([]); 
+  
+  // UI
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [masterFilter, setMasterFilter] = useState("All");
+  const [inactiveFilter, setInactiveFilter] = useState("All");
+  const [selectedMasterIds, setSelectedMasterIds] = useState([]);
+  const [alert, setAlert] = useState({ open: false, msg: "", type: "error" }); 
+
+  const showAlert = (msg, type) => setAlert({ open: true, msg, type });
+
+  // 1. FETCH DATA (FIXED: REMOVED DEDUPLICATION)
+  const fetchAllData = async () => {
+    if (!API_BASE) return showAlert("Configuration Error: API URL not found.", "error");
+
+    try {
+      const [hexaRes, octaRes] = await Promise.all([
+        axios.get(`${API_BASE}/api/pcb/history`, { params: { type: "HEXA" } }),
+        axios.get(`${API_BASE}/api/pcb/history`, { params: { type: "OCTA" } })
+      ]);
+
+      // Combine Raw Data
+      const allData = [...(hexaRes.data?.PcbData || []), ...(octaRes.data?.PcbData || [])];
+      
+      // REMOVED: The aggressive 'uniqueMap' logic that was hiding duplicates.
+      // Now we process everything the backend returns.
+
+      const processItem = (item) => {
+        let compositeType = item.Type;
+        if (!compositeType && item.type && item.source) {
+             compositeType = `${item.type}-${item.source}`.toUpperCase();
+        }
+        return compositeType || "UNKNOWN";
+      };
+
+      const activeItems = [];
+      const inactiveItems = [];
+
+      allData.forEach((item, index) => {
+          // Use DB ID (_id) if available, else Fallback to Serial + Index to prevent collisions
+          const uniqueId = item._id || `${item.serialNo}-${index}`;
+
+          const formatted = { 
+              id: uniqueId, 
+              ...item, 
+              Type: processItem(item) 
+          };
+
+          if(item.status === "Inaction" || item.status === "Assigned") {
+              inactiveItems.push(formatted);
+          } else if (item.status === "New") {
+              activeItems.push(formatted);
+          }
+      });
+
+      setMasterList(activeItems);
+      setInactiveList(inactiveItems);
+
+    } catch (err) {
+      console.error("Fetch Error:", err);
+      showAlert(`Failed to connect to ${API_BASE}. Check VPN or Server.`, "error");
+    }
+  };
 
   useEffect(() => {
-    // SIMULATED API CALL
-    // In production: axios.get('/api/production-status').then(res => setData(res.data))
-    const fetchData = async () => {
-      // Simulate network delay
-      await new Promise(resolve => setTimeout(resolve, 800));
-      setData(DASHBOARD_DATA);
-    };
-    fetchData();
-  }, []);
+    fetchAllData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [API_BASE]); 
 
-  const handleTabChange = (event, newValue) => {
-    setTabValue(newValue);
+
+  // 2. EXCEL UPLOAD LOGIC
+  const handleFileUpload = (e, source) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setFileName(file.name);
+    setUploadSource(source); 
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const buffer = new Uint8Array(evt.target.result);
+      const wb = XLSX.read(buffer, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      
+      const json = XLSX.utils.sheet_to_json(ws, { range: APP_CONFIG.EXCEL_START_ROW });
+
+      if (json.length === 0) {
+        showAlert("Excel file appears empty or headers could not be found.", "error");
+        return;
+      }
+
+      const originalCols = Object.keys(json[0]);
+      const validCols = originalCols.filter(col => !APP_CONFIG.IGNORED_COLUMNS.includes(col));
+      setPreviewColumns(validCols);
+
+      const serialCol = validCols.find(
+        (c) => c.toLowerCase().replace(/[^a-z]/g, "") === "serialnumber"
+      ) || validCols.find(c => c.toLowerCase().includes("serial")); 
+      
+      setSerialColumn(serialCol);
+
+      if (!serialCol) {
+          showAlert("Warning: Could not auto-detect 'Serial Number' column.", "warning");
+      }
+
+      // Pre-Filter 'Ghost Rows'
+      const cleanJson = json.filter(r => {
+          const val = r[serialCol];
+          return val !== undefined && val !== null && String(val).trim() !== "";
+      });
+
+      const processedRows = serialCol ? expandExcelRows(cleanJson, serialCol) : cleanJson.map((r, i) => ({...r, id: `ROW-${i}`}));
+      fullDataRef.current = processedRows;
+
+      const head = processedRows.slice(0, 5);
+      const tail = processedRows.length > 10 ? processedRows.slice(-5) : [];
+      
+      if (tail.length > 0) {
+         setPreviewRows([...head, { isGap: true, id: 'GAP' }, ...tail]);
+      } else {
+         setPreviewRows(head);
+      }
+
+      setTab("preview"); 
+      showAlert(`Parsed ${cleanJson.length} valid rows.`, "success");
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = null; 
   };
 
-  if (!data) {
-    return (
-      <Box sx={{ display: 'flex', height: '100vh', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: 2 }}>
-        <CircularProgress size={60} thickness={4} />
-        <Typography variant="h6" color="textSecondary">Loading Dashboard Data...</Typography>
-      </Box>
+  // 3. DOWNLOAD LOGIC
+  const handleDownloadProcessed = () => {
+    try {
+      if (!fullDataRef.current || fullDataRef.current.length === 0) {
+        return showAlert("No processed data to download.", "warning");
+      }
+      
+      const cleanData = fullDataRef.current.map(row => {
+          if (!row) return {};
+          const { id, ...rest } = row; 
+          return rest;
+      });
+
+      const ws = XLSX.utils.json_to_sheet(cleanData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Processed_Data");
+      
+      const safeName = (fileName || "PCB_Data").replace('.xlsx', '').replace('.xls', '');
+      XLSX.writeFile(wb, `Processed_${safeName}.xlsx`);
+      
+      showAlert("Download started successfully.", "success");
+    } catch (err) {
+      console.error("Download failed:", err);
+      showAlert("Failed to generate Excel file.", "error");
+    }
+  };
+
+
+  // 4. SAVE LOGIC
+  const saveToMaster = async () => {
+    const rawData = fullDataRef.current;
+    if (rawData.length === 0) return showAlert("No data to save.", "warning");
+
+    setIsUploading(true);
+    setUploadProgress(0);
+
+    let user = JSON.parse(localStorage.getItem("user")); 
+    
+    // Deduplication Map (Scoped to THIS upload batch only)
+    const processedMap = new Map(); 
+
+    rawData.forEach((row) => {
+      const findValue = (possibleHeaders) => {
+        const keys = Object.keys(row);
+        const match = keys.find(k => {
+          const cleanKey = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+          return possibleHeaders.some(h => cleanKey === h);
+        });
+        return match ? row[match] : null;
+      };
+
+      let Type = "UNKNOWN";
+      if(selectedType === "HEXA" && uploadSource === "child") Type = "HEXA-CHILD";
+      if(selectedType === "HEXA" && uploadSource === "main") Type = "HEXA-MAIN";
+      if(selectedType === "OCTA" && uploadSource === "child") Type = "OCTA-CHILD";
+      if(selectedType === "OCTA" && uploadSource === "main") Type = "OCTA-MAIN";
+
+      const pNo = findValue(["partnumber", "partno", "pno", "model"]) || "UNKNOWN";
+      const sNo = row[serialColumn] || findValue(["serialno", "serialnumber", "serial"]);
+      
+      if(!sNo) return; 
+
+      const payloadItem = {
+        partNumber: pNo,
+        serialNo: sNo,
+        PCBserialNoPartNumber: `${sNo}$${pNo}`,
+        productionOrder: row["Production order"],
+        quantity: row["Quantity"],
+        description: row["Description"],
+        userID: user?.id,
+        userName: user?.username,
+        userRole: user?.userRole,
+        userSBU: user?.sbu,
+        userSBUDIV: user?.subdivision,
+        Type: Type,
+      };
+
+      // Simple dedupe for this specific file upload
+      if (!processedMap.has(sNo)) {
+          processedMap.set(sNo, payloadItem);
+      }
+    });
+
+    const cleanPayload = Array.from(processedMap.values());
+    const duplicatesRemoved = rawData.length - cleanPayload.length;
+    
+    // Chunk & Upload
+    const BATCH_SIZE = APP_CONFIG.UPLOAD_BATCH_SIZE; 
+    const totalBatches = Math.ceil(cleanPayload.length / BATCH_SIZE);
+    
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < totalBatches; i++) {
+        const start = i * BATCH_SIZE;
+        const end = start + BATCH_SIZE;
+        const batch = cleanPayload.slice(start, end);
+
+        if (batch.length === 0) continue;
+
+        try {
+            await axios.post(`${API_BASE}/api/pcb/upload-bulk`, { 
+                type: selectedType,    
+                source: uploadSource,  
+                csvDataJSON: batch 
+            });
+            successCount += batch.length;
+        } catch (err) {
+            console.error(`Batch ${i+1} failed`, err);
+            failCount += batch.length;
+        }
+
+        setUploadProgress(Math.round(((i + 1) / totalBatches) * 100));
+    }
+
+    setIsUploading(false);
+    
+    let msg = `Upload Complete. Success: ${successCount}`;
+    if(failCount > 0) msg += `, Failed: ${failCount}`;
+    if(duplicatesRemoved > 0) msg += `. (Skipped ${duplicatesRemoved} duplicates)`;
+
+    showAlert(msg, failCount > 0 ? "warning" : "success");
+
+    if (successCount > 0) {
+        setTab("master"); 
+        setPreviewRows([]); 
+        fullDataRef.current = []; 
+        setUploadSource(""); 
+        setFileName("");
+        fetchAllData(); 
+    }
+  };
+
+
+  // 5. ACTION HANDLERS
+  const handleToggleSelect = (id) => {
+    setSelectedMasterIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+  };
+
+  const handleSelectGroup = (isChecked, categoryRows) => {
+    const rowIds = categoryRows.map(r => r.id);
+    setSelectedMasterIds(prev => isChecked 
+        ? [...new Set([...prev, ...rowIds])] 
+        : prev.filter(id => !rowIds.includes(id))
     );
-  }
+  };
+
+  const pushToInactive = () => {
+    if (selectedMasterIds.length === 0) return showAlert("Select items first.", "warning");
+
+    const selectedItems = masterList.filter(item => selectedMasterIds.includes(item.id));
+    const groups = {};
+    selectedItems.forEach(item => {
+        const genericType = item.Type.includes("HEXA") ? "HEXA" : "OCTA";
+        if (!groups[genericType]) groups[genericType] = [];
+        groups[genericType].push(item.serialNo);
+    });
+
+    const promises = Object.keys(groups).map(type => 
+        axios.put(`${API_BASE}/api/pcb/update-status`, { 
+            type: type, 
+            serialNos: groups[type], 
+            status: "Inaction" 
+        })
+    );
+
+    Promise.all(promises)
+    .then(() => {
+        fetchAllData(); 
+        setSelectedMasterIds([]); 
+        showAlert(`Moved ${selectedItems.length} items to Inaction List.`, "success");
+        setTab("inaction"); 
+    })
+    .catch(() => showAlert("Server Error: Could not update status.", "error"));
+  };
+
+  const reassign = (id) => {
+    const item = inactiveList.find((r) => r.id === id);
+    if (!item) return;
+    const type = item.Type.includes("HEXA") ? "HEXA" : "OCTA";
+
+    axios.put(`${API_BASE}/api/pcb/update-status`, { 
+        type: type, 
+        serialNos: [item.serialNo], 
+        status: "New" 
+    })
+    .then(() => {
+        fetchAllData(); 
+        showAlert("Item reassigned to Master Database.", "success");
+        setTab("master"); 
+    })
+    .catch(() => showAlert("Error reassigning item.", "error"));
+  };
+
+  const getStatusColor = (status) => {
+      switch ((status || "").toLowerCase()) {
+          case "new": return "info";
+          case "inaction": return "error";
+          case "completed": return "success";
+          case "wip": return "warning";
+          default: return "default";
+      }
+  };
+
+  const renderCategoryTables = (dataList, filter, isMaster) => {
+    const categoriesToShow = filter === "All" ? APP_CONFIG.FILTER_CATEGORIES.slice(1) : [filter];
+
+    return categoriesToShow.map((category) => {
+      const categoryRows = dataList.filter(d => d.Type === category);
+
+      if (categoryRows.length === 0) {
+        if (filter !== "All") {
+             return (
+               <Paper key={category} variant="outlined" sx={{ p: 4, textAlign: 'center', bgcolor: '#fafafa', borderStyle: 'dashed' }}>
+                  <Typography color="text.secondary">No records found for {category}.</Typography>
+               </Paper>
+             );
+        }
+        return null; 
+      }
+
+      const currentCategoryIds = categoryRows.map(r => r.id);
+      const allSelected = currentCategoryIds.every(id => selectedMasterIds.includes(id));
+      const someSelected = currentCategoryIds.some(id => selectedMasterIds.includes(id)) && !allSelected;
+
+      return (
+        <Paper key={category} variant="outlined" sx={{ mb: 3, overflow: 'hidden', borderColor: '#e0e0e0', borderRadius: 1 }}>
+            <Box sx={{ px: 2, py: 1.5, bgcolor: '#f8f9fa', borderBottom: '1px solid #e0e0e0', display: 'flex', justifyContent: 'space-between' }}>
+                <Stack direction="row" spacing={1} alignItems="center">
+                    <Chip label={category} size="small" color="primary" sx={{ borderRadius: '4px', fontWeight: 700 }} />
+                    <Typography variant="body2" sx={{ color: 'text.secondary', fontWeight: 500 }}>
+                         <strong>{categoryRows.length}</strong> Records
+                    </Typography>
+                </Stack>
+                {isMaster && (
+                    <Stack direction="row" alignItems="center" spacing={1}>
+                        <Typography variant="caption" sx={{ fontWeight: 600, color: 'text.secondary' }}>SELECT GROUP</Typography>
+                        <Checkbox size="small" checked={allSelected} indeterminate={someSelected} onChange={(e) => handleSelectGroup(e.target.checked, categoryRows)} sx={{ p: 0.5 }} />
+                    </Stack>
+                )}
+            </Box>
+
+            <TableContainer sx={{ maxHeight: '50vh' }}>
+              <Table stickyHeader size="small">
+                <TableHead>
+                  <TableRow>
+                    {isMaster && <TableCell padding="checkbox" sx={{ bgcolor: '#fff' }} />}
+                    {APP_CONFIG.DISPLAY_COLUMNS.map((col) => (
+                      <TableCell key={col} sx={{ fontWeight: 700, color: '#4a5568', bgcolor: '#fff', fontSize: '0.75rem' }}>
+                          {col.replace(/([A-Z])/g, ' $1').toUpperCase()}
+                      </TableCell>
+                    ))}
+                    <TableCell sx={{ fontWeight: 700, color: '#4a5568', bgcolor: '#fff', fontSize: '0.75rem' }}>STATUS</TableCell>
+                    {!isMaster && <TableCell align="right" sx={{ fontWeight: 700, color: '#4a5568', bgcolor: '#fff', fontSize: '0.75rem' }}>ACTION</TableCell>}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {categoryRows.map((row) => {
+                    const isSelected = selectedMasterIds.includes(row.id);
+                    return (
+                        <TableRow key={row.id} hover selected={isSelected}>
+                        {isMaster && (
+                            <TableCell padding="checkbox">
+                                <Checkbox size="small" checked={isSelected} onChange={() => handleToggleSelect(row.id)} />
+                            </TableCell>
+                        )}
+                        {APP_CONFIG.DISPLAY_COLUMNS.map((col) => (
+                            <TableCell key={col} sx={{ fontSize: '0.8125rem' }}>{row[col]}</TableCell>
+                        ))}
+                        <TableCell>
+                            <Chip label={row.status || "Unknown"} size="small" color={getStatusColor(row.status)} variant="outlined" sx={{ height: 22, fontSize: '0.7rem' }} />
+                        </TableCell>
+                        {!isMaster && (
+                            <TableCell align="right">
+                              {row.status === "Inaction" && (
+                                <Button startIcon={<ReplayIcon sx={{ fontSize: 16 }} />} size="small" onClick={() => reassign(row.id)}>Restore</Button>
+                              )}
+                            </TableCell>
+                        )}
+                        </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+        </Paper>
+      );
+    });
+  };
+
+  const TableLegend = ({id}) => (
+    <Paper variant="outlined" sx={{ mb: 2, p: 1, display: 'flex', gap: 2, borderRadius: 1, bgcolor: '#fff' }}>
+        <Typography variant="caption"><strong>SERIAL NO:</strong> Unique ID</Typography>
+        <Divider orientation="vertical" flexItem />
+        <Typography variant="caption"><strong>PART NUMBER:</strong> Model ID</Typography>
+        <Divider orientation="vertical" flexItem />
+        <Typography variant="caption"><strong>QUANTITY:</strong> Batch Size</Typography>
+    </Paper>
+  );
 
   return (
-    <Box sx={{ flexGrow: 1, p: 3, bgcolor: '#f5f5f5', minHeight: '100vh' }}>
-      {/* Header */}
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h4" gutterBottom fontWeight="bold" color="primary">
-          Project Synthesis TRDS-2
-        </Typography>
-        <Typography variant="subtitle1" color="textSecondary">
-          Production Status Dashboard • Order 04012026
-        </Typography>
-      </Box>
-
-      {/* KPI Cards */}
-      <Grid container spacing={3} sx={{ mb: 4 }}>
-        <Grid item xs={12} sm={6} md={3}>
-          <KPICard 
-            title="Total PO Quantity" 
-            value={data.summary.total.po} 
-            subtitle={`Octa: ${data.summary.octa.po} | Hexa: ${data.summary.hexa.po}`}
-            icon={<Inventory fontSize="large" />} 
-            color="primary" 
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KPICard 
-            title="Delivered" 
-            value={data.summary.total.delivered} 
-            subtitle={`Progress: ${((data.summary.total.delivered / data.summary.total.po) * 100).toFixed(2)}%`}
-            icon={<LocalShipping fontSize="large" />} 
-            color="success" 
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KPICard 
-            title="Work In Progress" 
-            value={data.summary.total.wip} 
-            subtitle="Active on Assembly Line" 
-            icon={<Autorenew fontSize="large" />} 
-            color="warning" 
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <KPICard 
-            title="Rework / Held" 
-            value={data.summary.total.rework} 
-            subtitle="Requires Immediate Attention" 
-            icon={<Warning fontSize="large" />} 
-            color="error" 
-          />
-        </Grid>
-      </Grid>
-
-      {/* Tabs */}
-      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
-        <Tabs value={tabValue} onChange={handleTabChange} aria-label="dashboard tabs">
-          <Tab label="Overview" />
-          <Tab label="Detailed List" />
+    <Box sx={{ width: '100%', typography: 'body1', bgcolor: '#f4f6f8', minHeight: '100vh', p: 3 }}>
+      <Paper elevation={0} sx={{ mb: 3, border: '1px solid #e0e0e0', borderRadius: 2 }}>
+        <Tabs value={tab} onChange={(e, v) => setTab(v)} indicatorColor="primary" textColor="primary">
+          <Tab icon={<CloudUploadIcon />} label="Import Data" value="upload" iconPosition="start" />
+          <Tab icon={<AddIcon />} label="Verification" value="preview" iconPosition="start" disabled={previewRows.length === 0} />
+          <Tab icon={<StorageIcon />} label="Master Database" value="master" iconPosition="start" />
+          <Tab icon={<BlockIcon />} label="Hold / Inaction" value="inaction" iconPosition="start" />
         </Tabs>
-      </Box>
 
-      {/* Tab Panels */}
-      {tabValue === 0 && (
-        <Grid container spacing={3}>
-          <Grid item xs={12} md={6}>
-            <StageChart 
-              title="Octa Module Status Distribution" 
-              data={data.stages.octa} 
-              color={theme.palette.primary.main} 
-            />
-          </Grid>
-          <Grid item xs={12} md={6}>
-            <StageChart 
-              title="Hexa Module Status Distribution" 
-              data={data.stages.hexa} 
-              color={theme.palette.secondary.main} 
-            />
-          </Grid>
-          <Grid item xs={12}>
-            <DispatchTimeline data={data.dispatch} />
-          </Grid>
-        </Grid>
-      )}
+        {tab === "upload" && (
+            <Box sx={{ p: 4 }}>
+                <Grid container justifyContent="center">
+                    <Grid item xs={12} md={8} textAlign="center">
+                        <FormControl size="small" sx={{ minWidth: 250, mb: 4 }}>
+                            <InputLabel>Project Type</InputLabel>
+                            <Select value={selectedType} label="Project Type" onChange={(e) => setSelectedType(e.target.value)}>
+                                {APP_CONFIG.PROJECT_TYPES.map((t) => <MenuItem key={t.value} value={t.value}>{t.label}</MenuItem>)}
+                            </Select>
+                        </FormControl>
 
-      {tabValue === 1 && (
-        <StatusTable items={data.items} />
-      )}
+                        <Stack direction={{ xs: 'column', md: 'row' }} spacing={3}>
+                            {["child", "main"].map((src) => (
+                                <Box key={src} component="label" sx={{ 
+                                    flex: 1, border: '1px dashed #cbd5e0', borderRadius: 2, bgcolor: '#f7fafc', p: 4, cursor: 'pointer',
+                                    '&:hover': { bgcolor: '#ebf8ff', borderColor: 'primary.main' }
+                                }}>
+                                    <input type="file" hidden onChange={(e) => handleFileUpload(e, src)} accept=".xlsx, .xls, .csv" />
+                                    {src === "child" ? <CategoryIcon color="primary" sx={{ fontSize: 32 }} /> : <StorageIcon color="secondary" sx={{ fontSize: 32 }} />}
+                                    <Typography variant="subtitle2" sx={{ mt: 1, textTransform: 'capitalize' }}>{src} Excel</Typography>
+                                </Box>
+                            ))}
+                        </Stack>
+                        {fileName && <Alert severity="success" sx={{ mt: 3 }}>Ready: {fileName} ({uploadSource})</Alert>}
+                    </Grid>
+                </Grid>
+            </Box>
+        )}
+
+        {tab === "preview" && (
+            <Box>
+                <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0' }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                        <Typography variant="subtitle1">Total: <strong>{fullDataRef.current.length}</strong> <Typography component="span" variant="caption">(Showing 5 Start/End)</Typography></Typography>
+                        <Stack direction="row" spacing={2}>
+                            <Button variant="outlined" startIcon={<DownloadIcon />} onClick={handleDownloadProcessed} disabled={isUploading || fullDataRef.current.length === 0}>
+                                Download Breakdown
+                            </Button>
+                            <Button variant="contained" startIcon={<SaveIcon />} onClick={saveToMaster} disabled={isUploading}>
+                                {isUploading ? "Uploading..." : "Commit to Database"}
+                            </Button>
+                        </Stack>
+                    </Stack>
+                    {isUploading && <LinearProgress variant="determinate" value={uploadProgress} sx={{ mt: 1 }} />}
+                </Box>
+                <TableContainer sx={{ maxHeight: '60vh' }}>
+                    <Table stickyHeader size="small">
+                        <TableHead>
+                            <TableRow>
+                                <TableCell>#</TableCell>
+                                {previewColumns.map(c => <TableCell key={c} sx={{ fontWeight: 700 }}>{c.toUpperCase()}</TableCell>)}
+                            </TableRow>
+                        </TableHead>
+                        <TableBody>
+                            {previewRows.map((row, i) => (
+                                row.isGap ? 
+                                <TableRow key="gap"><TableCell colSpan={100} align="center" sx={{ bgcolor: '#eee' }}>... {fullDataRef.current.length - 10} MORE RECORDS ...</TableCell></TableRow> :
+                                <TableRow key={row.id}>
+                                    <TableCell>{i < 5 ? i + 1 : fullDataRef.current.length - (previewRows.length - i) + 1}</TableCell>
+                                    {previewColumns.map(c => <TableCell key={c}>{row[c]}</TableCell>)}
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </TableContainer>
+            </Box>
+        )}
+
+        {(tab === "master" || tab === "inaction") && (
+            <Box sx={{ p: 3, bgcolor: '#f9fafb' }}>
+                <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between' }}>
+                    <Stack direction="row" spacing={2} alignItems="center">
+                        <FilterListIcon color="action" />
+                        <FormControl size="small" sx={{ minWidth: 200 }}>
+                            <Select value={tab === "master" ? masterFilter : inactiveFilter} onChange={(e) => tab === "master" ? setMasterFilter(e.target.value) : setInactiveFilter(e.target.value)}>
+                                {APP_CONFIG.FILTER_CATEGORIES.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+                            </Select>
+                        </FormControl>
+                    </Stack>
+                    {tab === "master" && (
+                        <Button variant="contained" color="warning" startIcon={<AssignmentReturnIcon />} onClick={pushToInactive} disabled={selectedMasterIds.length === 0}>
+                            Move Selected ({selectedMasterIds.length})
+                        </Button>
+                    )}
+                </Box>
+                <TableLegend id={tab} />
+                {renderCategoryTables(
+                    tab === "master" ? masterList : inactiveList, 
+                    tab === "master" ? masterFilter : inactiveFilter, 
+                    tab === "master"
+                )}
+            </Box>
+        )}
+      </Paper>
+      <Snackbar open={alert.open} autoHideDuration={3000} onClose={() => setAlert({ ...alert, open: false })} anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
+        <Alert severity={alert.type} variant="filled" onClose={() => setAlert({ ...alert, open: false })}>{alert.msg}</Alert>
+      </Snackbar>
     </Box>
   );
 }
