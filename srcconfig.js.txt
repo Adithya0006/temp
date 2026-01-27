@@ -60,743 +60,104 @@ useEffect(() => {
 
 
 
-// Flow Assignment card - WITH CRUD & AUTO-UPLOAD
+# done ny me @jan26
 
-import React, { useEffect, useState } from "react";
-import {
-  Box,
-  Paper,
-  Tabs,
-  Tab,
-  Typography,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Chip,
-  Container,
-  Stack,
-  CardContent,
-  Button,
-  Alert,
-  Card,
-  CircularProgress,
-  Snackbar,
-  IconButton,
-  Divider,
-  Fade,
-  TextField,
-  Tooltip
-} from "@mui/material";
+# ============================================================
+# FLOW ASSIGNMENT CRUD ENDPOINTS
+# ============================================================
 
-// Icons
-import StorageIcon from '@mui/icons-material/Storage';
-import SaveIcon from '@mui/icons-material/Save';
-import TableViewIcon from '@mui/icons-material/TableView';
-import ListAltIcon from '@mui/icons-material/ListAlt';
-import AssignmentIcon from '@mui/icons-material/Assignment';
-import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
-import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import CloseIcon from '@mui/icons-material/Close';
-import EditIcon from '@mui/icons-material/Edit';
-import DeleteIcon from '@mui/icons-material/Delete';
-import AddCircleIcon from '@mui/icons-material/AddCircle';
-import CancelIcon from '@mui/icons-material/Cancel';
+# 1. Pydantic Model for Request Validation (Not a new table)
+class FlowUpdateReq(BaseModel):
+    id: Optional[int] = None  # Mapping ID (None for Create, present for Update)
+    pcbProcessName: str
+    assignedTo: str
+    assignedToName: str
+    assignedToNameInitial: str
+    assignedToNameMRL: str
+    assignedToNameMRLExpiry: str
 
-import * as XLSX from "xlsx"; // Ensure xlsx is installed: npm install xlsx
-import axios from "axios";
-import { useSelector } from "react-redux";
-
-// --- Constants & Config ---
-const COLUMNS = [
-  "ID", 
-  "PCB Process Name", 
-  "Assigned To (Staff No)", 
-  "Assigned To Name", 
-  "Initial", 
-  "MRL", 
-  "MRL Expiry"
-];
-
-const BUTTON_OPTS = [
-  { id: "1", name: "VIEW FLOW ASSIGNMENT", icon: <ListAltIcon /> },
-  { id: "2", name: "UPLOAD FLOW ASSIGNMENT", icon: <AssignmentIcon /> },
-];
-
-export default function FlowAssigment() {
-
-  // --- State Management ---
-  const [tableData, setTableData] = useState([]);
-  const [Bid, SetBid] = React.useState("1"); // Current Main Tab
-  const [currentTab, setCurrentTab] = useState("view"); // Sub-tab for View
-
-  // CRUD / Edit Mode State
-  const [isEditing, setIsEditing] = useState(false);
-  const [editedData, setEditedData] = useState([]); // Temporary state for edits
-
-  // Upload State
-  const [file, setFile] = useState(null);
-  const [isUploading, setIsUploading] = useState(false);
-
-  // UI State
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  
-  // Notification State
-  const [snackbar, setSnackbar] = useState({
-    open: false,
-    message: "",
-    severity: "info" 
-  });
-
-  // --- Redux & API Configuration ---
-  const configDetails = useSelector(state => state.MROTDataSavingReducer.configDetails);
-  
-  // CHANGED: Point API1 to your new Python endpoint
-  var API1 = "/get_flow_data"; 
-  var API2 = "/upload_task_data";
-
-  // CHANGED: Use PythonServerIP for both endpoints now
-  var fetchDefaultFlowPCB = "http://192.168.0.20:2000" + API1; 
-  var postAssFlow = "http://192.168.0.20:2000" + API2; 
-
-  if (configDetails != undefined) {
-    if (configDetails.project[0].ServerIP != undefined) {
-      if (configDetails.project[0].ServerIP[0].PythonServerIP != undefined) {
-        // CHANGED: Both now use PythonServerIP
-        fetchDefaultFlowPCB = configDetails.project[0].ServerIP[0].PythonServerIP + API1;
-        postAssFlow = configDetails.project[0].ServerIP[0].PythonServerIP + API2; 
-      }
-    }
-  }
-
-  // --- Handlers ---
-
-  function dataSelection(id) {
-    SetBid(id);
-    setError(null);
-    setFile(null);
-    setIsEditing(false); // Reset edit mode when switching tabs
-  }
-
-  const handleTabChange = (event, newValue) => {
-    setCurrentTab(newValue);
-  };
-
-  const showNotification = (message, severity = "info") => {
-    setSnackbar({ open: true, message, severity });
-  };
-
-  const handleCloseSnackbar = () => {
-    setSnackbar({ ...snackbar, open: false });
-  };
-
-  // --- Fetch Data Effect (Tab 1) ---
-  const fetchData = () => {
-    setLoading(true);
-    axios.get(fetchDefaultFlowPCB)
-      .then((response) => {
-        const data = response.data.PcbData || response.data || [];
-        setTableData(data);
-        // Initialize editedData with fetched data for editing
-        setEditedData(data); 
-        setLoading(false);
-      })
-      .catch((err) => {
-        console.error("Error fetching data:", err);
-        setError("Failed to load data. Please check server connection.");
-        setLoading(false);
-      });
-  };
-
-  useEffect(() => {
-    if (currentTab === "view" && Bid === "1") {
-      fetchData();
-    }
-  }, [currentTab, Bid]);
-
-
-  // =========================================================
-  // CRUD HANDLERS
-  // =========================================================
-
-  const toggleEditMode = () => {
-    if (isEditing) {
-      // Cancel Action: Revert changes
-      setEditedData(tableData);
-      setIsEditing(false);
-    } else {
-      // Start Edit Action: Sync state
-      setEditedData([...tableData]);
-      setIsEditing(true);
-    }
-  };
-
-  // Handle Input Change in Table
-  const handleRowChange = (index, field, value) => {
-    const updatedData = [...editedData];
-    updatedData[index] = { ...updatedData[index], [field]: value };
-    setEditedData(updatedData);
-  };
-
-  // Delete Row
-  const handleDeleteRow = (index) => {
-    const updatedData = editedData.filter((_, i) => i !== index);
-    setEditedData(updatedData);
-  };
-
-  // Add New Row
-  const handleAddRow = () => {
-    const newRow = {
-        pcbProcessName: "",
-        assignedTo: "",
-        assignedToName: "",
-        assignedToNameInitial: "",
-        assignedToNameMRL: "",
-        assignedToNameMRLExpiry: ""
-    };
-    setEditedData([...editedData, newRow]);
-  };
-
-  // =========================================================
-  // APPLY HANDLER (Generate Excel & Upload)
-  // =========================================================
-  
-//   const handleApplyChanges = async () => {
-//     if (editedData.length === 0) {
-//         showNotification("No data to apply.", "warning");
-//         return;
-//     }
-
-//     setIsUploading(true);
-
-//     try {
-//         // 1. Prepare Data for Excel
-//         // Map editedData to the EXACT column names Python expects
-//         const excelData = editedData.map(row => ({
-//             "pcbProcessName": row.pcbProcessName,
-//             "assignedTo": row.assignedTo,
-//             "assignedToName": row.assignedToName,
-//             "assignedToNameInitial": row.assignedToNameInitial,
-//             "assignedToNameMRL": row.assignedToNameMRL,
-//             "assignedToNameMRLExpiry": row.assignedToNameMRLExpiry
-//         }));
-
-//         // 2. Generate Excel File (Blob)
-//         const worksheet = XLSX.utils.json_to_sheet(excelData);
-//         const workbook = XLSX.utils.book_new();
-//         XLSX.utils.book_append_sheet(workbook, worksheet, "Tasks");
-        
-//         // Write to buffer
-//         const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-//         const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        
-//         // Create a File object from Blob
-//         const virtualFile = new File([blob], "edited_flow_data.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-
-//         // 3. Send to Python Backend
-//         const formData = new FormData();
-//         formData.append('file', virtualFile);
-
-//         console.log("Applying changes via upload to:", postAssFlow);
-        
-//         const response = await axios.post(postAssFlow, formData, {
-//           headers: {
-//             'Content-Type': 'multipart/form-data'
-//           }
-//         });
-        
-//         console.log('Changes applied successfully:', response.data);
-//         showNotification("Flow successfully updated!", "success");
-        
-//         // 4. Cleanup
-//         setIsEditing(false);
-//         fetchData(); // Refresh data from Node server to see updates (assuming Python syncs to DB)
+# --- CREATE (Add New Record) ---
+@app.post("/create_flow_mapping")
+def create_flow_mapping(req: FlowUpdateReq, db: Session = Depends(get_db)):
+    # Find or Create the Process Step first
+    step = db.query(ProcessFlowMaster).filter(ProcessFlowMaster.step_name == req.pcbProcessName.strip()).first()
     
-//     } catch (error) {
-//         console.error('Error applying changes:', error);
-//         showNotification("Failed to apply changes. Check console.", "error");
-//     } finally {
-//         setIsUploading(false);
-//     }
-//   };
-const handleApplyChanges = async () => {
-    if (editedData.length === 0) {
-        showNotification("No data to apply.", "warning");
-        return;
-    }
+    if not step:
+        step = ProcessFlowMaster(
+            step_name=req.pcbProcessName.strip(),
+            assignedToNameMRL=req.assignedToNameMRL,
+            assignedToNameMRLExpiry=req.assignedToNameMRLExpiry
+        )
+        db.add(step)
+        db.flush() # Generates flow_step_id
 
-    setIsUploading(true);
+    # Create the Operator Mapping
+    new_mapping = OperatorStepMapping(
+        flow_step_id=step.flow_step_id,
+        operator_staff_no=normalize_staff(req.assignedTo),
+        operator_name=req.assignedToName,
+        operator_initial=req.assignedToNameInitial,
+        operator_MRL=req.assignedToNameMRL,
+        operator_MRL_Expiry=req.assignedToNameMRLExpiry
+    )
+    db.add(new_mapping)
+    db.commit()
+    return {"message": "New entry created successfully"}
 
-    try {
-        // 1. Prepare Data for Excel
-        const excelData = editedData.map(row => ({
-            "pcbProcessName": row.pcbProcessName,
-            "assignedTo": row.assignedTo,
-            "assignedToName": row.assignedToName,
-            "assignedToNameInitial": row.assignedToNameInitial,
-            "assignedToNameMRL": row.assignedToNameMRL,
-            "assignedToNameMRLExpiry": row.assignedToNameMRLExpiry
-        }));
+# --- UPDATE (Edit Existing Record) ---
+@app.put("/update_flow_mapping")
+def update_flow_mapping(req: FlowUpdateReq, db: Session = Depends(get_db)):
+    # Find the existing mapping by ID
+    mapping = db.get(OperatorStepMapping, req.id)
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Mapping not found")
 
-        // 2. Generate Excel File (Blob) - ROBUST COMPATIBILITY FIX
-        const worksheet = XLSX.utils.json_to_sheet(excelData);
-        const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, "Tasks");
-        
-        // FIX: Use 'binary' type instead of 'array' to avoid "Unrecognized type" error
-        const excelOutput = XLSX.write(workbook, { bookType: 'xlsx', type: 'binary' });
+    # Update Operator details
+    mapping.operator_staff_no = normalize_staff(req.assignedTo)
+    mapping.operator_name = req.assignedToName
+    mapping.operator_initial = req.assignedToNameInitial
+    mapping.operator_MRL = req.assignedToNameMRL
+    mapping.operator_MRL_Expiry = req.assignedToNameMRLExpiry
 
-        // Helper function to convert binary string to ArrayBuffer (Standard Fix)
-        const s2ab = (s) => {
-            const buf = new ArrayBuffer(s.length);
-            const view = new Uint8Array(buf);
-            for (let i = 0; i < s.length; i++) view[i] = s.charCodeAt(i) & 0xFF;
-            return buf;
-        };
-        
-        // Create Blob from the binary buffer
-        const blob = new Blob([s2ab(excelOutput)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        
-        // Create a File object from Blob
-        const virtualFile = new File([blob], "edited_flow_data.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    # Sync Process Name in ProcessFlowMaster
+    step = db.get(ProcessFlowMaster, mapping.flow_step_id)
+    if step:
+        step.step_name = req.pcbProcessName.strip()
 
-        // 3. Send to Python Backend
-        const formData = new FormData();
-        formData.append('file', virtualFile);
+    db.commit()
+    return {"message": "Mapping updated successfully"}
 
-        console.log("Applying changes via upload to:", postAssFlow);
-        
-        const response = await axios.post(postAssFlow, formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
-        });
-        
-        console.log('Changes applied successfully:', response.data);
-        showNotification("Flow successfully updated!", "success");
-        
-        // 4. Cleanup
-        setIsEditing(false);
-        fetchData(); // Refresh data to show new grid
+# --- DELETE (Remove Record) ---
+@app.delete("/delete_flow_mapping/{mapping_id}")
+def delete_flow_mapping(mapping_id: int, db: Session = Depends(get_db)):
+    mapping = db.get(OperatorStepMapping, mapping_id)
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Mapping not found")
     
-    } catch (error) {
-        console.error('Error applying changes:', error);
-        showNotification(`Failed to apply changes: ${error.message}`, "error");
-    } finally {
-        setIsUploading(false);
-    }
-  };
-
-  // --- Manual File Upload Logic (Tab 2) ---
-  const handleFileUpload = (event) => {
-    const selectedFile = event.target.files[0];
-    if (selectedFile) {
-        setFile(selectedFile);
-        showNotification(`File selected: ${selectedFile.name}`, "info");
-    }
-  };
-
-  const saveToMaster = async () => {
-    if (!file) {
-        showNotification("Please select an Excel file first.", "warning");
-        return;
-    }
-    setIsUploading(true);
-    try {
-        const formData = new FormData();
-        formData.append('file', file);
-        const response = await axios.post(postAssFlow, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        });
-        showNotification("Flow Assignment uploaded successfully!", "success");
-        setFile(null);
-    } catch (error) {
-        console.error('Error uploading file:', error);
-        showNotification("Upload failed.", "error");
-    } finally {
-        setIsUploading(false);
-    }
-  };
-
-  return (
-    <Container maxWidth="xxl" sx={{ mt: 4, fontFamily: 'Roboto, sans-serif' }}>
-        
-        {/* --- 1. Header Navigation --- */}
-        <Container sx={{ mt: 3, mb: 4, display: 'flex', justifyContent: 'center' }}>
-            <Paper elevation={0} sx={{ borderRadius: '50px', bgcolor: '#e2e8f0', p: 0.5 }}>
-                <Stack direction="row" spacing={1}>
-                    {BUTTON_OPTS.map((item) => {
-                        const isActive = Bid === item.id;
-                        return (
-                            <Button
-                                key={item.id}
-                                onClick={() => dataSelection(item.id)}
-                                variant={isActive ? "contained" : "text"}
-                                startIcon={item.icon}
-                                sx={{
-                                    borderRadius: '50px',
-                                    px: 4,
-                                    py: 1.2,
-                                    fontWeight: isActive ? '700' : '500',
-                                    textTransform: 'none',
-                                    transition: 'all 0.3s ease',
-                                    backgroundColor: isActive ? 'white' : 'transparent',
-                                    color: isActive ? '#1e293b' : '#64748b',
-                                    boxShadow: isActive ? '0 4px 6px -1px rgba(0, 0, 0, 0.1)' : 'none',
-                                    '&:hover': {
-                                        backgroundColor: isActive ? 'white' : 'rgba(255,255,255,0.5)',
-                                    }
-                                }}
-                            >
-                                {item.name}
-                            </Button>
-                        )
-                    })}
-                </Stack>
-            </Paper>
-        </Container>
-
-        {/* Error Display */}
-        {error && (
-            <Alert severity="error" sx={{ mb: 2, mx: 'auto', maxWidth: 800, borderRadius: 2 }}>{error}</Alert>
-        )}
-
-        {/* =========================================================
-            TAB 1: VIEW & EDIT FLOW ASSIGNMENT
-           ========================================================= */}
-        {Bid === "1" && (
-            <Fade in={true} timeout={500}>
-                <Paper elevation={0} sx={{ borderRadius: 3, border: '1px solid #e2e8f0', overflow: "hidden" }}>
-                    
-                    {/* Toolbar Header */}
-                    <Box sx={{ borderBottom: 1, borderColor: "#e2e8f0", bgcolor: "#f8fafc", px: 3, py: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Tabs value={currentTab} onChange={handleTabChange} textColor="primary" indicatorColor="primary">
-                            <Tab icon={<TableViewIcon />} iconPosition="start" label="Data Grid" value="view" />
-                        </Tabs>
-
-                        {/* EDIT ACTIONS */}
-                        <Stack direction="row" spacing={2}>
-                            {isEditing ? (
-                                <>
-                                    <Button 
-                                        variant="outlined" 
-                                        color="error" 
-                                        startIcon={<CancelIcon />}
-                                        onClick={toggleEditMode}
-                                    >
-                                        Cancel
-                                    </Button>
-                                    <Button 
-                                        variant="contained" 
-                                        color="success" 
-                                        startIcon={isUploading ? <CircularProgress size={20} color="inherit"/> : <SaveIcon />}
-                                        onClick={handleApplyChanges}
-                                        disabled={isUploading}
-                                    >
-                                        Apply Changes
-                                    </Button>
-                                </>
-                            ) : (
-                                <Button 
-                                    variant="contained" 
-                                    color="primary" 
-                                    startIcon={<EditIcon />}
-                                    onClick={toggleEditMode}
-                                >
-                                    Edit Flow
-                                </Button>
-                            )}
-                        </Stack>
-                    </Box>
-
-                    {/* Table Content */}
-                    <Box sx={{ p: 0 }}>
-                        <TableContainer sx={{ maxHeight: '65vh' }}>
-                            <Table stickyHeader aria-label="flow table" size={isEditing ? "small" : "medium"}>
-                                <TableHead>
-                                    <TableRow>
-                                        {COLUMNS.map((col) => (
-                                            <TableCell key={col} sx={{ fontWeight: "700", bgcolor: "#f1f5f9", color: '#475569', whiteSpace: 'nowrap' }}>
-                                                {col}
-                                            </TableCell>
-                                        ))}
-                                        {isEditing && <TableCell sx={{ fontWeight: "700", bgcolor: "#f1f5f9" }}>Action</TableCell>}
-                                    </TableRow>
-                                </TableHead>
-                                <TableBody>
-                                    {loading ? (
-                                        <TableRow>
-                                            <TableCell colSpan={COLUMNS.length + 1} align="center" sx={{ py: 6 }}>
-                                                <CircularProgress size={40} />
-                                                <Typography variant="body2" sx={{ mt: 2, color: 'text.secondary' }}>Loading Flow Data...</Typography>
-                                            </TableCell>
-                                        </TableRow>
-                                    ) : (
-                                        // RENDER EDITED DATA OR READ-ONLY DATA
-                                        (isEditing ? editedData : tableData).map((row, index) => (
-                                            <TableRow hover key={index} sx={{ '&:hover': { bgcolor: '#f8fafc' } }}>
-                                                
-                                                {/* ID (Index + 1) */}
-                                                <TableCell sx={{ color: '#64748b' }}>{index + 1}</TableCell>
-
-                                                {/* Process Name */}
-                                                <TableCell>
-                                                    {isEditing ? (
-                                                        <TextField 
-                                                            size="small" fullWidth variant="outlined" 
-                                                            value={row.pcbProcessName || ""} 
-                                                            onChange={(e) => handleRowChange(index, "pcbProcessName", e.target.value)}
-                                                        />
-                                                    ) : (
-                                                        <Chip label={row.pcbProcessName} size="small" sx={{ bgcolor: '#e0f2fe', color: '#0369a1', fontWeight: 500 }} />
-                                                    )}
-                                                </TableCell>
-
-                                                {/* Assigned To (Staff No) */}
-                                                <TableCell>
-                                                    {isEditing ? (
-                                                        <TextField 
-                                                            size="small" fullWidth
-                                                            value={row.assignedTo || ""} 
-                                                            onChange={(e) => handleRowChange(index, "assignedTo", e.target.value)}
-                                                        />
-                                                    ) : row.assignedTo}
-                                                </TableCell>
-
-                                                {/* Assigned To Name */}
-                                                <TableCell>
-                                                    {isEditing ? (
-                                                        <TextField 
-                                                            size="small" fullWidth
-                                                            value={row.assignedToName || ""} 
-                                                            onChange={(e) => handleRowChange(index, "assignedToName", e.target.value)}
-                                                        />
-                                                    ) : (
-                                                        <Stack direction="row" alignItems="center" spacing={1}>
-                                                            <Box sx={{ width: 24, height: 24, borderRadius: '50%', bgcolor: '#cbd5e1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 'bold' }}>
-                                                                {row.assignedToNameInitial || "?"}
-                                                            </Box>
-                                                            <Typography variant="body2">{row.assignedToName}</Typography>
-                                                        </Stack>
-                                                    )}
-                                                </TableCell>
-
-                                                {/* Initial */}
-                                                <TableCell>
-                                                    {isEditing ? (
-                                                        <TextField 
-                                                            size="small" sx={{ width: 80 }}
-                                                            value={row.assignedToNameInitial || ""} 
-                                                            onChange={(e) => handleRowChange(index, "assignedToNameInitial", e.target.value)}
-                                                        />
-                                                    ) : row.assignedToNameInitial}
-                                                </TableCell>
-
-                                                {/* MRL */}
-                                                <TableCell>
-                                                    {isEditing ? (
-                                                        <TextField 
-                                                            size="small" sx={{ width: 100 }}
-                                                            value={row.assignedToNameMRL || ""} 
-                                                            onChange={(e) => handleRowChange(index, "assignedToNameMRL", e.target.value)}
-                                                        />
-                                                    ) : (
-                                                        row.assignedToNameMRL && <Chip label={`MRL: ${row.assignedToNameMRL}`} size="small" variant="outlined" />
-                                                    )}
-                                                </TableCell>
-
-                                                {/* Expiry */}
-                                                <TableCell>
-                                                    {isEditing ? (
-                                                        <TextField 
-                                                            size="small"
-                                                            value={row.assignedToNameMRLExpiry || ""} 
-                                                            onChange={(e) => handleRowChange(index, "assignedToNameMRLExpiry", e.target.value)}
-                                                        />
-                                                    ) : (
-                                                        <Typography variant="caption" color="text.secondary">{row.assignedToNameMRLExpiry}</Typography>
-                                                    )}
-                                                </TableCell>
-
-                                                {/* DELETE BUTTON (Edit Mode Only) */}
-                                                {isEditing && (
-                                                    <TableCell>
-                                                        <IconButton size="small" color="error" onClick={() => handleDeleteRow(index)}>
-                                                            <DeleteIcon fontSize="small" />
-                                                        </IconButton>
-                                                    </TableCell>
-                                                )}
-                                            </TableRow>
-                                        ))
-                                    )}
-                                    {/* ADD ROW BUTTON */}
-                                    {isEditing && (
-                                        <TableRow>
-                                            <TableCell colSpan={8} align="center" sx={{ p: 2 }}>
-                                                <Button 
-                                                    startIcon={<AddCircleIcon />} 
-                                                    onClick={handleAddRow}
-                                                    variant="dashed" 
-                                                    sx={{ color: 'text.secondary', border: '1px dashed #cbd5e1', width: '100%' }}
-                                                >
-                                                    Add New Step
-                                                </Button>
-                                            </TableCell>
-                                        </TableRow>
-                                    )}
-                                </TableBody>
-                            </Table>
-                        </TableContainer>
-                    </Box>
-                </Paper>
-            </Fade>
-        )}
-
-        {/* =========================================================
-            TAB 2: UPLOAD FLOW ASSIGNMENT (Unchanged logic)
-           ========================================================= */}
-        {Bid === "2" && (
-            <Fade in={true} timeout={500}>
-                <Card elevation={0} sx={{ borderRadius: 4, mt: 2, maxWidth: 700, mx: 'auto', border: '1px solid #e2e8f0' }}>
-                    <CardContent sx={{ textAlign: 'center', py: 6, px: 4 }}>
-                        <Stack alignItems="center" spacing={1} sx={{ mb: 4 }}>
-                            <Box sx={{ p: 2, bgcolor: '#eff6ff', borderRadius: '50%', color: '#3b82f6' }}>
-                                <CloudUploadIcon sx={{ fontSize: 40 }} />
-                            </Box>
-                            <Typography variant="h5" sx={{ fontWeight: '800', color: '#1e293b' }}>
-                                Upload Flow Assignment
-                            </Typography>
-                        </Stack>
-                        <Box 
-                            component="label" 
-                            sx={{ display: 'block', border: '2px dashed', borderColor: file ? '#10b981' : '#cbd5e1', borderRadius: 3, bgcolor: file ? '#f0fdf4' : '#f8fafc', p: 5, cursor: 'pointer' }}
-                        >
-                            <input type="file" hidden onChange={handleFileUpload} accept=".xlsx, .xls" />
-                            {!file ? (
-                                <Stack alignItems="center" spacing={1}>
-                                    <StorageIcon sx={{ fontSize: 48, color: '#94a3b8' }} />
-                                    <Typography variant="h6">Click to Browse</Typography>
-                                </Stack>
-                            ) : (
-                                <Stack alignItems="center" spacing={2}>
-                                    <InsertDriveFileIcon sx={{ fontSize: 48, color: '#10b981' }} />
-                                    <Typography variant="h6">{file.name}</Typography>
-                                    <Button size="small" color="error" onClick={(e) => { e.preventDefault(); setFile(null); }}>Remove File</Button>
-                                </Stack>
-                            )}
-                        </Box>
-                        <Divider sx={{ my: 4 }} />
-                        <Button 
-                            variant="contained" size="large" disabled={!file || isUploading} onClick={saveToMaster}
-                            sx={{ py: 1.5, px: 6 }} startIcon={isUploading ? <CircularProgress size={20} color="inherit" /> : <SaveIcon />}
-                        >
-                            {isUploading ? "Uploading..." : "Save Flow Assignment"}
-                        </Button>
-                    </CardContent>
-                </Card>
-            </Fade>
-        )}
-
-        {/* --- Notifications (Snackbar) --- */}
-        <Snackbar
-            open={snackbar.open}
-            autoHideDuration={4000}
-            onClose={handleCloseSnackbar}
-            anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-        >
-            <Alert onClose={handleCloseSnackbar} severity={snackbar.severity} variant="filled" sx={{ width: '100%', borderRadius: 2 }}>
-                {snackbar.message}
-            </Alert>
-        </Snackbar>
-
-    </Container>
-  );
-}
+    db.delete(mapping)
+    db.commit()
+    return {"message": "Mapping deleted successfully"}
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-@app.get("/get_flow_data")
-def get_flow_data(db: Session = Depends(get_db)):
-    """
-    Fetches the combined Flow Steps and their Assigned Operators.
-    This replaces the Node.js '/getdefflow' endpoint.
-    """
-    
-    # Perform a LEFT JOIN to ensure we see steps even if no operator is assigned yet
-    # (Though typically your upload logic ensures they come in pairs)
-    results = db.query(
-        ProcessFlowMaster, 
-        OperatorStepMapping
-    ).outerjoin(
-        OperatorStepMapping, 
-        ProcessFlowMaster.flow_step_id == OperatorStepMapping.flow_step_id
-    ).order_by(
-        ProcessFlowMaster.step_order.asc()
+@app.get("/get_operator_suggestions")
+def get_operator_suggestions(db: Session = Depends(get_db)):
+    """Returns unique operators from the UserProfiles table."""
+    # Pulling from UserProfiles ensures we see all registered employees
+    users = db.query(UserProfiles).filter(
+        func.upper(UserProfiles.userRole).in_(["OPERATOR", "TECHNICIAN"])
     ).all()
-
-    response_data = []
     
-    for step, mapping in results:
-        # If mapping exists, use its data; otherwise, use defaults or step data
-        row = {
-            "id": mapping.step_map_id if mapping else step.flow_step_id, # Unique Key
-            "pcbProcessName": step.step_name,
-            
-            # Operator Details (Handle cases where step exists but no operator assigned)
-            "assignedTo": mapping.operator_staff_no if mapping else "",
-            "assignedToName": mapping.operator_name if mapping else "",
-            "assignedToNameInitial": mapping.operator_initial if mapping else "",
-            
-            # MRL Details
-            "assignedToNameMRL": mapping.operator_MRL if mapping else step.assignedToNameMRL,
-            "assignedToNameMRLExpiry": mapping.operator_MRL_Expiry if mapping else step.assignedToNameMRLExpiry
-        }
-        response_data.append(row)
+    return [{
+        "staff_no": u.userID,
+        "name": u.username,
+        "role": u.userRole
+    } for u in users]
 
-    return {"PcbData": response_data}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+@app.get("/get_process_suggestions")
+def get_process_suggestions(db: Session = Depends(get_db)):
+    """Returns unique process names from existing masters."""
+    # Using distinct to avoid duplicates from different stages
+    results = db.query(ProcessFlowMaster.step_name).distinct().all()
+    return [r.step_name for r in results if r.step_name]
