@@ -628,3 +628,79 @@ const ProductionLiveDashboard = ({ apiBaseUrl, user }) => {
 
 export default ProductionLiveDashboard;
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# --- UPDATE (Edit Existing Record) ---
+@app.put("/update_flow_mapping")
+def update_flow_mapping(req: FlowUpdateReq, db: Session = Depends(init_db)):
+    # 1. Find the existing mapping
+    mapping = db.get(OperatorStepMapping, req.id)
+    if not mapping:
+        # Fallback for vacant steps (HASS): Find the step and create a mapping
+        step = db.query(ProcessFlowMaster).filter(ProcessFlowMaster.step_name == req.pcbProcessName.strip()).first()
+        if not step:
+            raise HTTPException(status_code=404, detail="Process step not found")
+        
+        mapping = OperatorStepMapping(flow_step_id=step.flow_step_id)
+        db.add(mapping)
+
+    # 2. Update Operator details
+    mapping.operator_staff_no = normalize_staff(req.assignedTo)
+    mapping.operator_name = req.assignedToName
+    mapping.operator_initial = req.assignedToNameInitial
+    mapping.operator_MRL = req.assignedToNameMRL
+    mapping.operator_MRL_Expiry = req.assignedToNameMRLExpiry
+
+    # 3. FIX THE BUG: Sync Process Name ONLY if it has changed
+    step = db.get(ProcessFlowMaster, mapping.flow_step_id)
+    new_name = req.pcbProcessName.strip()
+    
+    if step and step.step_name != new_name:
+        # Check if the NEW name already exists elsewhere to avoid IntegrityError
+        exists = db.query(ProcessFlowMaster).filter(ProcessFlowMaster.step_name == new_name).first()
+        if exists:
+            # If it exists, just link the mapping to that existing step ID
+            mapping.flow_step_id = exists.flow_step_id
+        else:
+            # If it's a brand new unique name, update the current step
+            step.step_name = new_name
+
+    db.commit()
+    return {"message": "Mapping updated successfully"}
+
+
