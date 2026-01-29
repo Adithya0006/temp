@@ -1,3 +1,69 @@
+from fastapi import FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+
+app = FastAPI(docs_url=None,redoc_url=None)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/docs", include_in_schema=False)
+def custom_swagger_ui():
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title="API Docs",
+        swagger_js_url="/static/swagger/swagger-ui-bundle.js",
+        swagger_css_url="/static/swagger/swagger-ui.css",
+        swagger_favicon_url="/static/swagger/favicon.png"
+    )
+
+@app.get("/redoc", include_in_schema=False)
+def redoc_html():
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>API Docs - ReDoc</title>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+      </head>
+      <body>
+        <redoc spec-url="/openapi.json"></redoc>
+        <script src="/static/redoc/redoc.standalone.js"></script>
+      </body>
+    </html>
+    """)
+
+
+@app.get('/')
+def abc():
+    return "hello"
+
+
+
+@app.get("/amnew")
+def func():
+    return "am new"
+
+@app.post("/testing")
+def func():
+    return "sucess"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // [NEW CODE - PASTE THIS]
 useEffect(() => {
   let intervalId;
@@ -702,5 +768,6 @@ def update_flow_mapping(req: FlowUpdateReq, db: Session = Depends(init_db)):
 
     db.commit()
     return {"message": "Mapping updated successfully"}
+
 
 
