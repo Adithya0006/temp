@@ -1,698 +1,432 @@
-from fastapi import FastAPI
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
-
-app = FastAPI(docs_url=None,redoc_url=None)
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-@app.get("/docs", include_in_schema=False)
-def custom_swagger_ui():
-    return get_swagger_ui_html(
-        openapi_url="/openapi.json",
-        title="API Docs",
-        swagger_js_url="/static/swagger/swagger-ui-bundle.js",
-        swagger_css_url="/static/swagger/swagger-ui.css",
-        swagger_favicon_url="/static/swagger/favicon.png"
-    )
-
-@app.get("/redoc", include_in_schema=False)
-def redoc_html():
-    return HTMLResponse("""
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>API Docs - ReDoc</title>
-        <meta charset="utf-8"/>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-      </head>
-      <body>
-        <redoc spec-url="/openapi.json"></redoc>
-        <script src="/static/redoc/redoc.standalone.js"></script>
-      </body>
-    </html>
-    """)
-
-
-@app.get('/')
-def abc():
-    return "hello"
-
-
-
-@app.get("/amnew")
-def func():
-    return "am new"
-
-@app.post("/testing")
-def func():
-    return "sucess"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// [NEW CODE - PASTE THIS]
-useEffect(() => {
-  let intervalId;
-
-  // Define a reusable fetch function inside the effect
-  const fetchDashboardData = async (isBackgroundRefresh = false) => {
-    // 1. Only show the loading spinner on the very first load (not on background updates)
-    if (!isBackgroundRefresh) setLoading(true);
-
-    const requestParams = { staff_no: user?.id };
-
-    try {
-      const response = await axios.get(fetchTobeAssignedPCB, { params: requestParams });
-      const newData = response.data || {};
-
-      // 2. SMART UPDATE: Compare new data with current state to prevent unnecessary re-renders
-      setTaskGraph((prevData) => {
-        // We compare the stringified versions. If they match, we return 'prevData'.
-        // React sees the state hasn't changed and skips the re-render.
-        if (JSON.stringify(prevData) !== JSON.stringify(newData)) {
-          return newData; // Data Changed! React will update the screen.
-        }
-        return prevData; // No Change! React does nothing.
-      });
-      
-    } catch (err) {
-      console.error("Error fetching data:", err);
-    } finally {
-      // Only turn off loading if we turned it on (i.e., not background refresh)
-      if (!isBackgroundRefresh) setLoading(false);
-    }
-  };
-
-  // Logic: Only run this if we are actively looking at the dashboard
-  if (currentView === "dashboard") {
-    // A. Run immediately so the user sees data right away
-    fetchDashboardData(false);
-
-    // B. Set up a timer to run silently every 5 seconds
-    intervalId = setInterval(() => {
-      fetchDashboardData(true); // true = silent mode (no spinner)
-    }, 5000);
-  }
-
-  // Cleanup: Stop the timer if the user leaves the dashboard tab
-  return () => {
-    if (intervalId) clearInterval(intervalId);
-  };
-}, [currentView]);
-
-
-
-
-
-
-
-
-
-
-
-
-
-# done ny me @jan26
-
-# ============================================================
-# FLOW ASSIGNMENT CRUD ENDPOINTS
-# ============================================================
-
-# 1. Pydantic Model for Request Validation (Not a new table)
-class FlowUpdateReq(BaseModel):
-    id: Optional[int] = None  # Mapping ID (None for Create, present for Update)
-    pcbProcessName: str
-    assignedTo: str
-    assignedToName: str
-    assignedToNameInitial: str
-    assignedToNameMRL: str
-    assignedToNameMRLExpiry: str
-
-# --- CREATE (Add New Record) ---
-@app.post("/create_flow_mapping")
-def create_flow_mapping(req: FlowUpdateReq, db: Session = Depends(get_db)):
-    # Find or Create the Process Step first
-    step = db.query(ProcessFlowMaster).filter(ProcessFlowMaster.step_name == req.pcbProcessName.strip()).first()
-    
-    if not step:
-        step = ProcessFlowMaster(
-            step_name=req.pcbProcessName.strip(),
-            assignedToNameMRL=req.assignedToNameMRL,
-            assignedToNameMRLExpiry=req.assignedToNameMRLExpiry
-        )
-        db.add(step)
-        db.flush() # Generates flow_step_id
-
-    # Create the Operator Mapping
-    new_mapping = OperatorStepMapping(
-        flow_step_id=step.flow_step_id,
-        operator_staff_no=normalize_staff(req.assignedTo),
-        operator_name=req.assignedToName,
-        operator_initial=req.assignedToNameInitial,
-        operator_MRL=req.assignedToNameMRL,
-        operator_MRL_Expiry=req.assignedToNameMRLExpiry
-    )
-    db.add(new_mapping)
-    db.commit()
-    return {"message": "New entry created successfully"}
-
-# --- UPDATE (Edit Existing Record) ---
-@app.put("/update_flow_mapping")
-def update_flow_mapping(req: FlowUpdateReq, db: Session = Depends(get_db)):
-    # Find the existing mapping by ID
-    mapping = db.get(OperatorStepMapping, req.id)
-    if not mapping:
-        raise HTTPException(status_code=404, detail="Mapping not found")
-
-    # Update Operator details
-    mapping.operator_staff_no = normalize_staff(req.assignedTo)
-    mapping.operator_name = req.assignedToName
-    mapping.operator_initial = req.assignedToNameInitial
-    mapping.operator_MRL = req.assignedToNameMRL
-    mapping.operator_MRL_Expiry = req.assignedToNameMRLExpiry
-
-    # Sync Process Name in ProcessFlowMaster
-    step = db.get(ProcessFlowMaster, mapping.flow_step_id)
-    if step:
-        step.step_name = req.pcbProcessName.strip()
-
-    db.commit()
-    return {"message": "Mapping updated successfully"}
-
-# --- DELETE (Remove Record) ---
-@app.delete("/delete_flow_mapping/{mapping_id}")
-def delete_flow_mapping(mapping_id: int, db: Session = Depends(get_db)):
-    mapping = db.get(OperatorStepMapping, mapping_id)
-    if not mapping:
-        raise HTTPException(status_code=404, detail="Mapping not found")
-    
-    db.delete(mapping)
-    db.commit()
-    return {"message": "Mapping deleted successfully"}
-
-
-
-
-@app.get("/get_operator_suggestions")
-def get_operator_suggestions(db: Session = Depends(get_db)):
-    """Returns unique operators from the UserProfiles table."""
-    # Pulling from UserProfiles ensures we see all registered employees
-    users = db.query(UserProfiles).filter(
-        func.upper(UserProfiles.userRole).in_(["OPERATOR", "TECHNICIAN"])
-    ).all()
-    
-    return [{
-        "staff_no": u.userID,
-        "name": u.username,
-        "role": u.userRole
-    } for u in users]
-
-@app.get("/get_process_suggestions")
-def get_process_suggestions(db: Session = Depends(get_db)):
-    """Returns unique process names from existing masters."""
-    # Using distinct to avoid duplicates from different stages
-    results = db.query(ProcessFlowMaster.step_name).distinct().all()
-    return [r.step_name for r in results if r.step_name]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import {
-  Box,
-  Grid,
-  Card,
-  CardContent,
-  Typography,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Paper,
-  Chip,
-  CircularProgress,
-  Divider,
-  Alert,
-  Fade,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  Button,
-  Stepper,
-  Step,
-  StepLabel,
-  StepContent,
-  Stack,
-  Avatar,
-  IconButton // NEW: Added for the close button on inline table
+  Box, Grid, Paper, Typography, Divider, CircularProgress, Alert, Card,
+  CardContent, useTheme, IconButton, Button, Tooltip as MuiTooltip,
+  Dialog, DialogTitle, DialogContent, Table, TableBody, TableCell, 
+  TableHead, TableRow, FormControl, InputLabel, Select, MenuItem
 } from '@mui/material';
 import {
-  CheckCircle,
-  Engineering,
-  DateRange,
-  Assessment,
-  Close as CloseIcon,
-  Person,
-  AccessTime,
-  Timer,
-  VerifiedUser,
-  DataObject,
-  Clear // NEW: Added for the close button icon
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, PieChart, Line, Pie, Cell, AreaChart, Area,
+  LabelList, ComposedChart
+} from 'recharts';
+import {
+  TrendingUp, WarningAmber, Speed, Inventory, Dashboard, Assignment, InfoOutlined, Close
 } from '@mui/icons-material';
-import { useSelector } from 'react-redux/es/exports';
-import PCBTable from './PCBTable';
+import BentoBox from './BentoBox';
 
-// --- MOCK DATA ---
-const MOCK_DATA = {
-  meta: { generated_at: new Date().toISOString() },
-  pcb_summary: { completed_today: 45, completed: 130, inaction: 0, new: 10 },
-  operational_health: { wip_pcbs: 5 },
-  pcbs: [
-    {
-      pcb_serial: "32401$113300033357",
-      serial_no: "32401",
-      part_number: "113300033357",
-      current_step: "AOI CORRECTION",
-      current_step_order: 6,
-      status: "IN_PROGRESS",
-      operator: { staff_no: "E169", name: "Santosh Kumar" },
-      time_in_current_step_minutes: 45
-    },
-    {
-      pcb_serial: "32402$113300033358",
-      serial_no: "32402",
-      part_number: "113300033358",
-      current_step: "SOLDERING",
-      current_step_order: 4,
-      status: "IN_PROGRESS",
-      operator: { staff_no: "E170", name: "Ravi Teja" },
-      time_in_current_step_minutes: 12
-    }
-  ]
+const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'];
+const GRID_COLOR = "#f1f5f9";
+
+const CustomTooltip = ({ active, payload, label }) => {
+  if (active && payload && payload.length) {
+    return (
+      <Paper elevation={4} sx={{ p: 1.5, border: 'none', borderRadius: 2 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 700 }}>{label}</Typography>
+        {payload.map((entry, index) => (
+          <Box key={index} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+            <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: entry.color }} />
+            <Typography variant="caption" color="text.secondary">
+              {entry.name}: <span style={{ color: '#000', fontWeight: 600 }}>{entry.value}</span>
+            </Typography>
+          </Box>
+        ))}
+      </Paper>
+    );
+  }
+  return null;
 };
 
-const MOCK_TIMELINE_RESPONSE = {
-  "Serial_No": "32401",
-  "Part_Number": "62005774DA",
-  "Production_Order": "83079796",
-  "Description": "6 CHANNELS TR MODULE",
-  "Type": "HEXA-CHILD",
-  "New_Time": "2025-12-31T20:50:37.052000+05:30",
-  "Inaction_time": "2025-12-31T20:50:47.291000+05:30",
-  "Assigned_time": "2025-12-31T15:22:24.696002",
-  "ope_log_details": [
-    {
-      "Task_Name": "Labelling & Traceability of the Bare PCB",
-      "current_step_id": 1,
-      "assignment_id": 1,
-      "log_Data": { "pcb_date_code": "78", "label_gr_details": "UKYU" },
-      "operator_name": "SANTOSH KUMAR",
-      "operator_MRL": "MRL-6",
-      "userRole": "Operator",
-      "start_time": "2025-12-31T21:36:01.730000",
-      "Task_Status": "Completed",
-      "PCBserialNoPartNumber": "32401$62005774DA",
-      "operator_staff_no": "E169",
-      "userID": "E169",
-      "operator_initial": "SNK",
-      "operator_MRL_Expiry": "427.0",
-      "userName": "Santosh Kumar",
-      "end_time": "2025-12-31T21:36:10.298000"
-    }
-  ],
-  "Durations": [8.568]
-};
-
-// --- HELPER COMPONENTS ---
-const StatCard = ({ title, value, icon, subtext, color = "primary" }) => (
-  <Card elevation={0} sx={{ height: '100%', borderRadius: 4, border: '1px solid #e0e0e0', boxShadow: '0 2px 10px rgba(0,0,0,0.02)', cursor: 'pointer', '&:hover': { borderColor: 'primary.main', bgcolor: '#fcfcfc' } }}>
-    <CardContent sx={{ p: 3 }}>
-      <Box display="flex" justifyContent="space-between" alignItems="flex-start">
-        <Box>
-          <Typography color="text.secondary" variant="subtitle2" fontWeight="600" sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: '0.75rem' }}>{title}</Typography>
-          <Typography variant="h3" fontWeight="700" color="text.primary" sx={{ mt: 1, mb: 0.5 }}>{value}</Typography>
-          {subtext && <Chip label={subtext} size="small" variant="outlined" sx={{ borderRadius: 1, height: 20, fontSize: '0.65rem', fontWeight: 'bold', borderColor: '#eee', bgcolor: '#fafafa' }} />}
-        </Box>
-        <Box sx={{ p: 1.5, borderRadius: 3, bgcolor: `${color}.light`, color: `${color}.main`, display: 'flex', opacity: 0.9 }}>{icon}</Box>
-      </Box>
-    </CardContent>
-  </Card>
-);
-
-const DetailItem = ({ label, value, highlight = false }) => (
-  <Box mb={1.5}>
-    <Typography variant="caption" display="block" color="text.secondary" sx={{ textTransform: 'uppercase', fontSize: '0.65rem', letterSpacing: 0.5 }}>{label}</Typography>
-    <Typography variant="body2" fontWeight={highlight ? 700 : 500} sx={{ wordBreak: 'break-word' }}>{value || '-'}</Typography>
-  </Box>
-);
-
-const ProductionLiveDashboard = ({ apiBaseUrl, user }) => {
-  const [data, setData] = useState(null);
-  const [tabledata,setTableData]=useState(null)
+const AnalyticalDashboard = ({ apiBaseUrl, user }) => {
+  const theme = useTheme();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [selectedPcbTimeline, setSelectedPcbTimeline] = useState(null);
+  const [data, setData] = useState(null);
+  const [activeChart, setActiveChart] = useState(0);
+  const [isIdleDialogOpen, setIsIdleDialogOpen] = useState(false);
 
-  // --- CHANGE 1: New state for inline table data ---
-  const [activeCategoryData, setActiveCategoryData] = useState(null);
-  const [activeCategoryTitle, setActiveCategoryTitle] = useState('');
+  const [timeView, setTimeView] = useState('live'); 
+  const [groupView, setGroupView] = useState('operation'); 
 
-  const configDetails = useSelector(state => state.MROTDataSavingReducer.configDetails);
-  const DASHBOARD_API = "/supervisor/external/dashboard";
-  var API3 = "/supervisor/typepcbdetails"
-  var fetachTypePcbDetails = "http://192.168.0.20:2000" + API3
-
-  if (configDetails !== undefined) {
-    if (configDetails.project?.[0]?.ServerIP?.[0]?.PythonServerIP !== undefined) {
-      fetachTypePcbDetails = configDetails.project[0].ServerIP[0].PythonServerIP + API3
-    }
-  }
+  const chartCategories = [
+    { id: 0, name: "Status Overview", icon: <Dashboard fontSize="small" /> },
+    { id: 1, name: "Production Flow", icon: <TrendingUp fontSize="small" /> },
+    { id: 2, name: "Operator Analysis", icon: <Assignment fontSize="small" /> },
+    { id: 3, name: "Performance Metrics", icon: <Speed fontSize="small" /> }
+  ];
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const dashboardUrl = apiBaseUrl + DASHBOARD_API;
-        const response = await axios.get(dashboardUrl, { params: { staff_no: user?.id } });
-        setData(response.data);
-        setTableData(response?.data?.pcbs)
+        setLoading(true);
+        const response = await axios.get(`${apiBaseUrl}/dashboard/analytics`, { params: { staff_no: user?.id } });
+        processData(response.data);
         setLoading(false);
       } catch (err) {
-        console.error(err);
-        setError("Live connection failed. Using local cached data.");
-        setData(MOCK_DATA);
+        setError("Failed to load analytical data.");
         setLoading(false);
       }
     };
     fetchData();
-  }, [apiBaseUrl, user?.id]);
+  }, [apiBaseUrl, user]);
 
-  const handlePcbClick = async (serialNo) => {
-    try {
-      const timelineUrl = `${apiBaseUrl}/timeline`;
-      const response = await axios.get(timelineUrl, { params: { SerialNo: serialNo } });
-      setSelectedPcbTimeline(response.data);
-      setDialogOpen(true);
-    } catch (err) {
-      setSelectedPcbTimeline(MOCK_TIMELINE_RESPONSE);
-      setDialogOpen(true);
-    }
+  const processData = (rawData) => {
+    const pcbTypes = Object.entries(rawData.pcb_types || {}).map(([key, value]) => ({ name: key, value }));
+    const pcbStatuses = Object.entries(rawData.pcb_statuses || {}).map(([key, value]) => ({ name: key, value }));
+    const orderTrend = (rawData.order_trend || []).map(item => ({
+      ...item,
+      date: new Date(item.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    }));
+    setData({ ...rawData, pcbTypesArray: pcbTypes, pcbStatusesArray: pcbStatuses, orderTrendFormatted: orderTrend });
   };
 
-  const formatTime = (isoString) => isoString ? new Date(isoString).toLocaleString() : "--:--";
-  const getStatusColor = (status) => {
-    switch (status) { case 'IN_PROGRESS': return 'primary'; case 'COMPLETED': return 'success'; case 'STUCK': return 'error'; default: return 'default'; }
-  };
+  const getDynamicFlowConfig = () => {
+    if (!data) return { chartData: [], xKey: '', yKey: '', label: '' };
 
-  if (loading) return <Box display="flex" justifyContent="center" p={5}><CircularProgress /></Box>;
-
-  const handleCloseDialog = () => {
-    setDialogOpen(false);
-    setSelectedPcbTimeline(null);
-  };
-
-  // --- CHANGE 2: Updated handleCardClick to set data for the inline table ---
-  const handleCardClick = async (title) => {
-    const requestParams = { staff_no: user?.id, type: title };
-    setLoading(true);
-    try {
-      const response = await axios.get(fetachTypePcbDetails, { params: requestParams });
-      const responseData = response.data;
-      
-      if (Array.isArray(responseData)) {
-        setActiveCategoryData(responseData);
-        setActiveCategoryTitle(title);
+    if (timeView === 'live') {
+      if (groupView === 'operation') {
+        return { chartData: data.production_flow || [], xKey: 'step', yKey: 'active_pcbs', label: 'Live WIP' };
       } else {
-        setActiveCategoryData([]); // Handle empty or unexpected format
-        setActiveCategoryTitle(title);
+        return { chartData: data.operator_load || [], xKey: 'name', yKey: 'pcb_count', label: 'Live Load' };
       }
-    } catch (error) {
-      console.error('Error fetching card data:', error);
-      setActiveCategoryData(null);
-    } finally {
-      setLoading(false);
+    } else {
+      if (groupView === 'operation') {
+        return { chartData: data.overall_operation_wise || [], xKey: 'step', yKey: 'pcb_count', label: 'Current PCB Count' };
+      } else {
+        // Requirement: x = staff_no, y = total operations qualified
+        return { chartData: data.overall_operator_wise || [], xKey: 'staff_no', yKey: 'pcb_count', label: 'Qualified Operations' };
+      }
     }
   };
+
+  const dynamicConfig = getDynamicFlowConfig();
+
+  const ChartWrapper = ({ title, description, children, height = 400, extraHeader = null }) => (
+    <Paper elevation={0} sx={{ 
+      p: 2.5, borderRadius: 3, border: `1px solid ${theme.palette.divider}`, 
+      height: height, display: 'flex', flexDirection: 'column', bgcolor: 'background.paper',
+      transition: 'box-shadow 0.3s', '&:hover': { boxShadow: '0 4px 20px 0 rgba(0,0,0,0.05)' }
+    }}>
+      <Box mb={2} display="flex" justifyContent="space-between" alignItems="flex-start">
+        <Box>
+          <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 700 }}>{title}</Typography>
+          <Typography variant="caption" color="text.secondary">{description}</Typography>
+        </Box>
+        <Box display="flex" alignItems="center" gap={1}>
+          {extraHeader}
+          <MuiTooltip title="Analytics Info"><IconButton size="small"><InfoOutlined fontSize="inherit" /></IconButton></MuiTooltip>
+        </Box>
+      </Box>
+      <Box sx={{ flexGrow: 1, minHeight: 0 }}>{children}</Box>
+    </Paper>
+  );
+
+  const handleIdleClick = () => {
+    if (data?.batch_aging?.stuck_list?.length > 0) {
+      setIsIdleDialogOpen(true);
+    }
+  };
+
+  if (loading) return <Box display="flex" justifyContent="center" alignItems="center" height="60vh"><CircularProgress thickness={2} /></Box>;
+  if (error) return <Alert severity="error" variant="outlined" sx={{ m: 2, borderRadius: 2 }}>{error}</Alert>;
 
   return (
-    <Box>
-      {error && <Fade in={true}><Alert severity="warning" sx={{ mb: 3 }}>{error}</Alert></Fade>}
+    <>
+      <Grid container spacing={3} mb={4}>
+        {[
+          { 
+            title: "AVERAGE STARTUP DELAY", 
+            val: `${data.batch_aging?.average_wip_age_days?.toFixed(1) || 0}d`, 
+            icon: <Speed />, 
+            col: '#4f46e5',
+            desc: "Mean duration between PCB assignment and actual commencement of work." 
+          },
+          { 
+            title: "IDLE PCBS", 
+            val: data.batch_aging?.stuck_count || 0, 
+            icon: <WarningAmber />, 
+            col: '#ef4444',
+            onClick: handleIdleClick,
+            desc: "Assigned PCBs reaching a 5-day threshold with zero tasks started." 
+          },
+          { 
+            title: "ACTIVE WIP", 
+            val: data.production_flow?.reduce((a, c) => a + (c.active_pcbs || 0), 0), 
+            icon: <Inventory />, 
+            col: '#10b981',
+            desc: "Total quantity of PCBs currently assigned to operators." 
+          },
+          { 
+            title: "NEW RECEIVED TODAY", 
+            val: data.orderTrendFormatted?.slice(-1)[0]?.count || 0, 
+            icon: <TrendingUp />, 
+            col: '#f59e0b',
+            desc: "Total quantity of new units inducted within the last 24 hours." 
+          }
+        ].map((kpi, i) => (
+          <Grid item xs={12} sm={6} md={3} key={i}>
+            <Paper 
+              onClick={() => kpi.onClick && kpi.onClick()} 
+              sx={{ 
+                p: 3, borderRadius: 4, display: 'flex', flexDirection: 'column', 
+                justifyContent: 'space-between', border: '1px solid #e2e8f0', height: '100%',
+                transition: '0.3s', cursor: kpi.onClick ? 'pointer' : 'default',
+                '&:hover': { 
+                  boxShadow: kpi.onClick ? `0 10px 25px ${kpi.col}25` : '0 4px 20px rgba(0,0,0,0.05)',
+                  transform: kpi.onClick ? 'translateY(-2px)' : 'none'
+                }
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+                <Box sx={{ p: 1, borderRadius: 2, bgcolor: `${kpi.col}15`, color: kpi.col, display: 'flex', alignItems: 'center' }}>
+                  {kpi.icon}
+                </Box>
+                <Typography variant="caption" sx={{ color: kpi.col, fontWeight: 800, letterSpacing: '0.05rem', textTransform: 'uppercase' }}>
+                  {kpi.title}
+                </Typography>
+              </Box>
 
-      <Grid container spacing={1} mb={4}>
-        <Grid item xs={12} sm={6} md={3}>
-          <Box onClick={() => handleCardClick('Completed')}>
-            <StatCard title="PCB Tasks Completed Today" value={data.pcb_summary.completed_today} subtext="Count of Tasks Completed" icon={<CheckCircle fontSize="large" />} color="success" />
-          </Box>
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <Box onClick={()=>handleCardClick('Assigned')}>
-            <StatCard title="In-progress PCB's" value={data.operational_health.wip_pcbs} subtext="Units on Line" icon={<Engineering fontSize="large" />} color="primary" />
-          </Box>
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <StatCard title="Total Pcbs Completed" value={data.pcb_summary.completed} subtext="Total Output" icon={<CheckCircle fontSize="large" />} color="success" />
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <Box onClick={()=>handleCardClick('Inaction')}>
-            <StatCard title="Yet To Start" value={data.pcb_summary.inaction} subtext="Idle Units" icon={<Engineering fontSize="large" />} color="primary" />
-          </Box>
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <Box onClick={() => handleCardClick('New')}>
-            <StatCard title="Pcbs Present in Master List" value={data.pcb_summary.new || 0} subtext="Count of New Pcbs" icon={<CheckCircle fontSize="large" />} color="success" />
-          </Box>
-        </Grid>
+              <Box>
+                <Typography variant="h4" fontWeight={800} sx={{ color: '#1e293b', mb: 0.5 }}>
+                  {kpi.val}
+                </Typography>
+                <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.75rem', lineHeight: 1.4, display: 'block', minHeight: '40px' }}>
+                  {kpi.desc}
+                </Typography>
+                {kpi.onClick && (
+                  <Typography variant="caption" sx={{ color: kpi.col, fontWeight: 700, mt: 1.5, display: 'block', fontSize: '0.65rem' }}>
+                    VIEW DETAILS →
+                  </Typography>
+                )}
+              </Box>
+            </Paper>
+          </Grid>
+        ))}
       </Grid>
 
-      {/* --- CHANGE 3: Inline Table Section (Conditional Rendering) --- */}
-      {activeCategoryData && (
-        <Fade in={true}>
-          <Paper elevation={0} sx={{ borderRadius: 4, border: '1px solid #1976d2', overflow: 'hidden', mb: 4 }}>
-            <Box p={2} bgcolor="#e3f2fd" display="flex" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6" fontWeight="800" color="primary.main">
-                Detailed View: {activeCategoryTitle}
-              </Typography>
-              <IconButton size="small" onClick={() => setActiveCategoryData(null)}>
-                <Clear color="error" />
-              </IconButton>
-            </Box>
-            <TableContainer sx={{ maxHeight: 400 }}>
-              <Table stickyHeader size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ fontWeight: '700', bgcolor: '#f1f5f9' }}>Serial No</TableCell>
-                    <TableCell sx={{ fontWeight: '700', bgcolor: '#f1f5f9' }}>Part Number</TableCell>
-                    <TableCell sx={{ fontWeight: '700', bgcolor: '#f1f5f9' }}>Production Order</TableCell>
-                    <TableCell sx={{ fontWeight: '700', bgcolor: '#f1f5f9' }}>Type</TableCell>
-                    <TableCell sx={{ fontWeight: '700', bgcolor: '#f1f5f9' }}>Description</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {activeCategoryData.length > 0 ? activeCategoryData.map((item, index) => (
-                    <TableRow key={item.serialNo || item.Serial_No || index} hover>
-                      <TableCell>{item.Serial_No || item.serialNo || 'N/A'}</TableCell>
-                      <TableCell>{item.Part_Number || item.partNumber || 'N/A'}</TableCell>
-                      <TableCell>{item.Production_Order || item.productionOrder || 'N/A'}</TableCell>
-                      <TableCell>{item.Type || item.type || 'N/A'}</TableCell>
-                      <TableCell>{item.Description || item.description || 'N/A'}</TableCell>
-                    </TableRow>
-                  )) : (
-                    <TableRow>
-                      <TableCell colSpan={5} align="center">No PCB data available for this type.</TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </Paper>
-        </Fade>
-      )}
-
-      {/* Main Traceability Table */}
-      <Paper elevation={0} sx={{ borderRadius: 4, border: '1px solid #e0e0e0', overflow: 'hidden' }}>
-        <Box p={3} borderBottom="1px solid #f0f0f0" display="flex" justifyContent="space-between"><Typography variant="h6" fontWeight="800" color="#333">Real Time Traceability</Typography><Chip label="Live Tracking" color="success" size="small" variant="outlined" /></Box>
-        <TableContainer sx={{ maxHeight: 500 }}>
+      <Dialog 
+        open={isIdleDialogOpen} 
+        onClose={() => setIsIdleDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3 } }}
+      >
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 800 }}>
+          <Box display="flex" alignItems="center" gap={1}>
+            <WarningAmber color="error" />
+            Stationary PCBs (Inactivity {'>'} 5 Days)
+          </Box>
+          <IconButton onClick={() => setIsIdleDialogOpen(false)}><Close /></IconButton>
+        </DialogTitle>
+        <DialogContent dividers sx={{ p: 0 }}>
           <Table stickyHeader>
             <TableHead>
               <TableRow>
-                {['Serial No', 'Part Number', 'Stage', 'Operator', 'Status'].map(h => <TableCell key={h} sx={{ bgcolor: '#f8f9fa', fontWeight: 'bold' }}>{h}</TableCell>)}
+                <TableCell sx={{ fontWeight: 700, bgcolor: '#f8fafc' }}>PCB ID</TableCell>
+                <TableCell sx={{ fontWeight: 700, bgcolor: '#f8fafc' }}>Current Step Name</TableCell>
+                <TableCell sx={{ fontWeight: 700, bgcolor: '#f8fafc' }}>Days Stationary</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {data.pcbs?.map((pcb) => (
-                <TableRow key={pcb.pcb_serial} hover onClick={() => handlePcbClick(pcb.serial_no)} sx={{ cursor: 'pointer' }}>
-                  <TableCell sx={{ color: 'primary.main', fontWeight: 'bold' }}>{pcb.serial_no}</TableCell>
-                  <TableCell sx={{ fontFamily: 'monospace' }}>{pcb.part_number}</TableCell>
-                  <TableCell>{pcb.current_step}</TableCell>
-                  <TableCell>{pcb.operator?.name}</TableCell>
-                  <TableCell><Chip label={pcb.status} color={getStatusColor(pcb.status)} size="small" /></TableCell>
+              {data.batch_aging?.stuck_list?.map((pcb, index) => (
+                <TableRow key={index} hover>
+                  <TableCell sx={{ fontWeight: 600 }}>{pcb.pcb_id}</TableCell>
+                  <TableCell>{pcb.current_step_name}</TableCell>
+                  <TableCell sx={{ color: '#ef4444', fontWeight: 700 }}>
+                    {pcb.age_days.toFixed(1)} Days
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
-        </TableContainer>
-        <PCBTable pcbData={tabledata}></PCBTable>
-      </Paper>
-
-      {/* Timeline Dialog (Remains for individual PCB details) */}
-      <Dialog
-        open={dialogOpen}
-        onClose={handleCloseDialog}
-        maxWidth="lg"
-        fullWidth
-        PaperProps={{ sx: { borderRadius: 3, minHeight: '70vh' } }}
-      >
-        {selectedPcbTimeline && (
-          <>
-            <DialogTitle sx={{ borderBottom: '1px solid #f0f0f0', pb: 2 }}>
-              <Box display="flex" justifyContent="space-between" alignItems="center">
-                <Box>
-                  <Typography variant="h5" fontWeight="bold">PCB Production Tracker</Typography>
-                  <Stack direction="row" spacing={1} alignItems="center" mt={0.5}>
-                    <Chip label={`Serial Number: ${selectedPcbTimeline.Serial_No}`} color="primary" size="small" />
-                    <Chip label={`Part Number: ${selectedPcbTimeline.Part_Number}`} variant="outlined" size="small" />
-                  </Stack>
-                </Box>
-                <Button sx={{ display: 'flex', justifyContent: 'center', backgroundColor: "blue", color: "white" }} onClick={handleCloseDialog}>Close
-                  <CloseIcon />
-                </Button>
-              </Box>
-            </DialogTitle>
-
-            <DialogContent sx={{ py: 3, px: 4, bgcolor: '#f8f9fa' }}>
-              <Paper elevation={0} sx={{ p: 3, mb: 4, borderRadius: 2, border: '1px solid #e0e0e0', bgcolor: 'white' }}>
-                <Grid container spacing={3}>
-                  <Grid item xs={12} sm={6} md={4} lg={3}>
-                    <DetailItem label="Description" value={selectedPcbTimeline.Description} highlight />
-                  </Grid>
-                  <Grid item xs={12} sm={6} md={4} lg={3}>
-                    <DetailItem label="Production Order" value={selectedPcbTimeline.Production_Order} highlight />
-                  </Grid>
-                  <Grid item xs={12} sm={6} md={4} lg={3}>
-                    <DetailItem label="Type" value={selectedPcbTimeline.Type} />
-                  </Grid>
-                  <Grid item xs={12} sm={6} md={4} lg={3}>
-                    <DetailItem label="Total Steps Completed" value={selectedPcbTimeline.ope_log_details?.length || 0} />
-                  </Grid>
-                </Grid>
-              </Paper>
-
-              <Divider sx={{ mb: 3 }} textAlign="left">
-                <Chip label="PROCESS EXECUTION TIMELINE" size="small" sx={{ fontWeight: 'bold' }} />
-              </Divider>
-
-              <Stepper orientation="vertical" activeStep={selectedPcbTimeline.ope_log_details?.length || 0} sx={{ px: 2 }}>
-                {selectedPcbTimeline.ope_log_details && selectedPcbTimeline.ope_log_details.map((step, index) => (
-                  <Step key={index} expanded>
-                    <StepLabel StepIconProps={{ style: { color: step.Task_Status === 'Completed' ? '#2e7d32' : '#1976d2' } }}>
-                      <Typography variant="h6" fontWeight="bold" sx={{ fontSize: '1rem' }}>{step.Task_Name}</Typography>
-                    </StepLabel>
-                    <StepContent>
-                      <Paper elevation={0} sx={{ p: 0, bgcolor: 'white', border: '1px solid #ddd', borderRadius: 2, mt: 1, overflow: 'hidden' }}>
-                        <Box p={2} bgcolor="#fcfcfc" borderBottom="1px solid #eee">
-                          <Grid container spacing={2}>
-                            <Grid item xs={12} sm={4}>
-                              <Stack direction="row" spacing={1.5} alignItems="center">
-                                <Avatar sx={{ width: 32, height: 32, bgcolor: '#e3f2fd', color: '#1976d2' }}><Person fontSize="small" /></Avatar>
-                                <Box>
-                                  <Typography variant="caption" display="block" color="text.secondary">Operator Name</Typography>
-                                  <Typography variant="body2" fontWeight="600">{step.operator_name}</Typography>
-                                </Box>
-                              </Stack>
-                            </Grid>
-                            <Grid item xs={12} sm={4}>
-                               <Stack direction="row" spacing={1.5} alignItems="center">
-                                <Avatar sx={{ width: 32, height: 32, bgcolor: '#e8f5e9', color: '#2e7d32' }}><Timer fontSize="small" /></Avatar>
-                                <Box>
-                                  <Typography variant="caption" display="block" color="text.secondary">Duration</Typography>
-                                  <Typography variant="body2" fontWeight="600">
-                                    {selectedPcbTimeline.Durations && selectedPcbTimeline.Durations[index] !== undefined
-                                      ? `${parseFloat(selectedPcbTimeline.Durations[index]).toFixed(2)}s`
-                                      : 'N/A'}
-                                  </Typography>
-                                </Box>
-                              </Stack>
-                            </Grid>
-                          </Grid>
-                        </Box>
-                        <Box p={3}>
-                           <DetailItem label="Staff No" value={step.operator_staff_no} />
-                           {/* Add more step details as per original code if needed */}
-                        </Box>
-                      </Paper>
-                    </StepContent>
-                  </Step>
-                ))}
-              </Stepper>
-            </DialogContent>
-          </>
-        )}
+        </DialogContent>
       </Dialog>
-    </Box>
+
+      <Box p={3} sx={{ bgcolor: '#f8fafc', minHeight: '100vh' }}>
+        <Box display="flex" justifyContent="space-between" alignItems="center" mb={4}>
+          <Box />
+          <Box sx={{ display: 'flex', bgcolor: 'white', p: 0.5, borderRadius: 3, border: `1px solid ${theme.palette.divider}` }}>
+            {chartCategories.map((cat) => (
+              <Button
+                key={cat.id}
+                onClick={() => setActiveChart(cat.id)}
+                variant={activeChart === cat.id ? "contained" : "text"}
+                startIcon={cat.icon}
+                sx={{ 
+                  px: 2, borderRadius: 2.5, textTransform: 'none', fontWeight: 600,
+                  boxShadow: activeChart === cat.id ? '0 4px 12px rgba(79, 70, 229, 0.2)' : 'none'
+                }}
+              >
+                {cat.name}
+              </Button>
+            ))}
+          </Box>
+        </Box>
+
+        <Grid container spacing={3}>
+          {activeChart === 0 && (
+            <>
+              <Grid item xs={12} md={6}>
+                <ChartWrapper title="Production Order Trend" description="Daily incoming unit count" height={350}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={data.orderTrendFormatted}>
+                      <defs>
+                        <linearGradient id="chartColor" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.3}/>
+                          <stop offset="95%" stopColor="#4f46e5" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
+                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12}} dy={10} />
+                      <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12}} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Area type="monotone" dataKey="count" stroke="#4f46e5" strokeWidth={3} fill="url(#chartColor)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </ChartWrapper>
+              </Grid>
+
+              <Grid item xs={12} md={6}>
+                <ChartWrapper title="Current Status Distribution" description="Breakdown of all units by their current status." height={350}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={data.pcbStatusesArray}
+                        cx="50%" cy="50%" outerRadius={80} dataKey="value"
+                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      >
+                        {data.pcbStatusesArray.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                      <Legend verticalAlign="bottom" />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </ChartWrapper>
+              </Grid>
+            </>
+          )}
+
+          {activeChart === 1 && (
+            <Grid item xs={12}>
+              <ChartWrapper
+                title="Active PCBs & Staff Capacity"
+                description="Monitor workload distribution and skill matrices."
+                height={550}
+                extraHeader={
+                  <Box display="flex" gap={1.5}>
+                    <FormControl size="small" sx={{ minWidth: 100 }}>
+                      <Select value={timeView} onChange={(e) => setTimeView(e.target.value)} sx={{ fontSize: '0.75rem', height: 32, borderRadius: 2 }}>
+                        <MenuItem value="live">Live</MenuItem>
+                        <MenuItem value="overall">Overall</MenuItem>
+                      </Select>
+                    </FormControl>
+                    <FormControl size="small" sx={{ minWidth: 140 }}>
+                      <Select value={groupView} onChange={(e) => setGroupView(e.target.value)} sx={{ fontSize: '0.75rem', height: 32, borderRadius: 2 }}>
+                        <MenuItem value="operation">Operation Wise</MenuItem>
+                        <MenuItem value="operator">Operator Wise</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Box>
+                }
+              >
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={dynamicConfig.chartData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis
+                      dataKey={dynamicConfig.xKey}
+                      fontSize={11}
+                      interval={0}
+                      angle={-45}
+                      textAnchor="end"
+                      height={80}
+                    />
+                    <YAxis allowDecimals={false} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend verticalAlign="top" wrapperStyle={{paddingBottom: '20px'}}/>
+                    <Bar dataKey={dynamicConfig.yKey} name={dynamicConfig.label} fill={timeView === 'live' ? "#4f46e5" : "#10b981"} radius={[4, 4, 0, 0]} barSize={30}>
+                      <LabelList dataKey={dynamicConfig.yKey} position="top" style={{ fontSize: '10px', fill: '#666', fontWeight: 700 }} />
+                    </Bar>
+                    {timeView === 'live' && groupView === 'operation' && (
+                      <Bar dataKey="staff_capacity" name="Staff Capacity" fill="#94a3b8" radius={[4, 4, 0, 0]} barSize={30}>
+                        <LabelList dataKey="staff_capacity" position="top" style={{ fontSize: '10px', fill: '#666' }} />
+                      </Bar>
+                    )}
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartWrapper>
+            </Grid>
+          )}
+
+          {activeChart === 2 && (
+            <>
+              <Grid item xs={12} md={6}>
+                <ChartWrapper title="Operator Workload" description="Number of PCBs actively assigned to each operator." height={600}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={data.operator_load} margin={{ top: 30, right: 20, left: 20, bottom: 60 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="name" fontSize={12} interval={0} angle={-45} textAnchor="end" height={60} />
+                      <YAxis type="number" allowDecimals={false} fontSize={12} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Bar dataKey="pcb_count" name="Assigned PCBs" radius={[4, 4, 0, 0]} barSize={40}>
+                        {data.operator_load.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                        <LabelList dataKey="pcb_count" position="top" style={{ fill: '#666', fontSize: '12px', fontWeight: 'bold' }} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </ChartWrapper>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <BentoBox title="Operations per Operator" icon={Assignment} color="#FF8442">
+                  <ResponsiveContainer width="100%" height={400}>
+                    <ComposedChart data={data.overall_operator_wise} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="staff_no" fontSize={11} tickLine={false} axisLine={false} />
+                      <YAxis fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Bar dataKey="pcb_count" name="Operations Skilled" fill="#FF8442" radius={[4, 4, 0, 0]} barSize={30}>
+                        <LabelList dataKey="pcb_count" position="top" style={{ fill: '#666', fontSize: '12px', fontWeight: 'bold' }} />
+                      </Bar>
+                      <Line type="monotone" dataKey="pcb_count" stroke="#4f46e5" strokeWidth={2} dot={{ r: 4, fill: "#4f46e5", strokeWidth: 2 }} activeDot={{ r: 6 }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </BentoBox>
+              </Grid>
+            </>
+          )}
+
+          {activeChart === 3 && (
+            <Grid item xs={12}>
+              <ChartWrapper title="Cycle Time by Stage" description="Avg. processing time in minutes" height={500}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={data.cycle_time} margin={{top: 30, bottom: 80}}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOR} />
+                    <XAxis dataKey="step_name" angle={-45} textAnchor="end" interval={0} tick={{fontSize: 11}} height={100} />
+                    <YAxis axisLine={false} tickLine={false} unit="min" />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Bar dataKey="avg_time_minutes" name="Minutes" radius={[4, 4, 0, 0]} barSize={45}>
+                      {data.cycle_time?.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} opacity={0.8} />)}
+                      <LabelList dataKey="avg_time_minutes" position="top" formatter={(v) => `${v}min`} style={{fontWeight: 700}} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartWrapper>
+            </Grid>
+          )}
+        </Grid>
+      </Box>
+    </>
   );
 };
 
-export default ProductionLiveDashboard;
+export default AnalyticalDashboard;
 
 
 
@@ -715,59 +449,248 @@ export default ProductionLiveDashboard;
 
 
 
+import statistics
+from datetime import datetime
+from sqlalchemy import cast, Date, distinct, func
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
+# Assuming standard FastAPI setup with init_db dependency
+@app.get("/dashboard/analytics")
+def get_dashboard_analytics(db: Session = Depends(init_db)):
+    """
+    MASTER DASHBOARD ANALYTICS
+    - PCB Breakdown (Type & Status)
+    - Production Flow (Live WIP & Staff Capacity per Step)
+    - Overall Operation Wise (Current PCB distribution across ALL stages)
+    - Operator Load (Live Active PCBs per Operator)
+    - Overall Operator Wise (Current distribution across staff with handover logic)
+    - Cycle Time (Average duration per Step)
+    - Batch Aging (Stuck/Old Batches)
+    - Daily Order Trend (Velocity)
+    """
 
+    # Helper for date parsing
+    def parse_db_date(date_str):
+        if not date_str: return None
+        try: return datetime.fromisoformat(str(date_str).replace("Z", ""))
+        except ValueError: return None
 
+    # ======================================================
+    # 1. PCB TYPE & STATUS DISTRIBUTION
+    # ======================================================
+    type_counts = (
+        db.query(PcbData.Type, func.count(PcbData.ID).label("count"))
+        .group_by(PcbData.Type)
+        .all()
+    )
+    pcb_type_distribution = {(row.Type or "Unknown"): row.count for row in type_counts}
 
+    status_counts = (
+        db.query(PcbData.status, func.count(PcbData.ID).label("count"))
+        .group_by(PcbData.status)
+        .all()
+    )
+    pcb_status_distribution = {(row.status or "Unknown"): row.count for row in status_counts}
 
-
-
-
-
-
-
-
-
-
-
-
-# --- UPDATE (Edit Existing Record) ---
-@app.put("/update_flow_mapping")
-def update_flow_mapping(req: FlowUpdateReq, db: Session = Depends(init_db)):
-    # 1. Find the existing mapping
-    mapping = db.get(OperatorStepMapping, req.id)
-    if not mapping:
-        # Fallback for vacant steps (HASS): Find the step and create a mapping
-        step = db.query(ProcessFlowMaster).filter(ProcessFlowMaster.step_name == req.pcbProcessName.strip()).first()
-        if not step:
-            raise HTTPException(status_code=404, detail="Process step not found")
-        
-        mapping = OperatorStepMapping(flow_step_id=step.flow_step_id)
-        db.add(mapping)
-
-    # 2. Update Operator details
-    mapping.operator_staff_no = normalize_staff(req.assignedTo)
-    mapping.operator_name = req.assignedToName
-    mapping.operator_initial = req.assignedToNameInitial
-    mapping.operator_MRL = req.assignedToNameMRL
-    mapping.operator_MRL_Expiry = req.assignedToNameMRLExpiry
-
-    # 3. FIX THE BUG: Sync Process Name ONLY if it has changed
-    step = db.get(ProcessFlowMaster, mapping.flow_step_id)
-    new_name = req.pcbProcessName.strip()
+    # ======================================================
+    # 2. PRODUCTION FLOW (LIVE - OPERATION WISE)
+    # ======================================================
+    active_assignments = db.query(PCBAssignment).filter(PCBAssignment.overall_status == "IN_PROGRESS").all()
     
-    if step and step.step_name != new_name:
-        # Check if the NEW name already exists elsewhere to avoid IntegrityError
-        exists = db.query(ProcessFlowMaster).filter(ProcessFlowMaster.step_name == new_name).first()
-        if exists:
-            # If it exists, just link the mapping to that existing step ID
-            mapping.flow_step_id = exists.flow_step_id
-        else:
-            # If it's a brand new unique name, update the current step
-            step.step_name = new_name
+    live_step_counts = {}
+    for pcb in active_assignments:
+        current_step = db.query(ProcessFlowMaster.step_name).filter(ProcessFlowMaster.step_order == pcb.current_step_id).first()
+        stepname = current_step.step_name if current_step else "Unknown"
+        live_step_counts[stepname] = live_step_counts.get(stepname, 0) + 1
 
-    db.commit()
-    return {"message": "Mapping updated successfully"}
+    production_flow = []
+    for stepname, pcb_count in live_step_counts.items():
+        step_master = db.query(ProcessFlowMaster.step_order).filter(ProcessFlowMaster.step_name == stepname).first()
+        operators_count = db.query(OperatorStepMapping).filter(OperatorStepMapping.flow_step_id == step_master.step_order).count() if step_master else 0
+        
+        production_flow.append({
+            "step": stepname,
+            "order": step_master.step_order if step_master else 0,
+            "active_pcbs": pcb_count,
+            "staff_capacity": operators_count
+        })
+
+    # ======================================================
+    # 3. OVERALL OPERATION WISE
+    # x-axis: ALL operations | y-axis: Total PCBs currently present
+    # ======================================================
+    overall_op_stats = (
+        db.query(
+            ProcessFlowMaster.step_name,
+            func.count(PCBAssignment.assignment_id).label("pcb_count")
+        )
+        .outerjoin(PCBAssignment, (PCBAssignment.current_step_id == ProcessFlowMaster.flow_step_id) & 
+                                  (PCBAssignment.overall_status == "IN_PROGRESS"))
+        .group_by(ProcessFlowMaster.step_name)
+        .all()
+    )
+    overall_operation_wise = [
+        {"step": row.step_name, "pcb_count": row.pcb_count} 
+        for row in overall_op_stats
+    ]
+
+    # ======================================================
+    # 4. OPERATOR LOAD (LIVE - OPERATOR WISE)
+    # ======================================================
+    live_operator_counts = (
+        db.query(
+            PCBProcessLog.assigned_operator_staff_no,
+            func.count(PCBAssignment.assignment_id).label("pcb_count")
+        )
+        .join(PCBAssignment, PCBAssignment.assignment_id == PCBProcessLog.assignment_id)
+        .filter(
+            PCBAssignment.overall_status == "IN_PROGRESS",
+            PCBAssignment.current_step_id == PCBProcessLog.flow_step_id,
+            PCBProcessLog.start_time.isnot(None)
+        )
+        .group_by(PCBProcessLog.assigned_operator_staff_no)
+        .all()
+    )
+
+    op_names_query = db.query(OperatorStepMapping.operator_staff_no, OperatorStepMapping.operator_name).distinct().all()
+    name_lookup = {row.operator_staff_no: row.operator_name for row in op_names_query}
+
+    operator_load_data = []
+    for row in live_operator_counts:
+        staff_no = row.assigned_operator_staff_no
+        operator_load_data.append({
+            "staff_no": staff_no,
+            "name": name_lookup.get(staff_no, staff_no),
+            "pcb_count": row.pcb_count
+        })
+
+    # ======================================================
+    # 5. OVERALL OPERATOR WISE (HANDOVER LOGIC)
+    # x-axis: all operator staff numbers
+    # y-axis: count of PCBs currently "held" or "available"
+    # ======================================================
+    operator_pcb_counts = {op.operator_staff_no: 0 for op in op_names_query}
+    
+    for assign in active_assignments:
+        # Check if an operator has started the PCB at the current step
+        active_log = db.query(PCBProcessLog).filter(
+            PCBProcessLog.assignment_id == assign.assignment_id,
+            PCBProcessLog.flow_step_id == assign.current_step_id,
+            PCBProcessLog.start_time.isnot(None)
+        ).first()
+
+        if active_log and active_log.assigned_operator_staff_no:
+            # Case: Started - Only the active operator holds it
+            op_id = active_log.assigned_operator_staff_no
+            if op_id in operator_pcb_counts:
+                operator_pcb_counts[op_id] += 1
+        else:
+            # Case: Pending - Available to all qualified operators for this step
+            qualified_ops = db.query(OperatorStepMapping.operator_staff_no).filter(
+                OperatorStepMapping.flow_step_id == assign.current_step_id
+            ).all()
+            for op in qualified_ops:
+                op_id = op.operator_staff_no
+                if op_id in operator_pcb_counts:
+                    operator_pcb_counts[op_id] += 1
+
+    overall_operator_wise = [
+        {
+            "staff_no": staff_no,
+            "name": name_lookup.get(staff_no, staff_no),
+            "pcb_count": count
+        }
+        for staff_no, count in operator_pcb_counts.items()
+    ]
+
+    # ======================================================
+    # 6. CYCLE TIME ANALYTICS
+    # ======================================================
+    time_logs = (
+        db.query(ProcessFlowMaster.step_name, PCBProcessLog.start_time, PCBProcessLog.end_time)
+        .join(ProcessFlowMaster, ProcessFlowMaster.flow_step_id == PCBProcessLog.flow_step_id)
+        .filter(
+            PCBProcessLog.process_status == "COMPLETED",
+            PCBProcessLog.start_time.isnot(None),
+            PCBProcessLog.end_time.isnot(None)
+        )
+        .all()
+    )
+
+    step_durations = {}
+    for row in time_logs:
+        start = parse_db_date(row.start_time)
+        end = parse_db_date(row.end_time)
+        if start and end and end > start:
+            duration = (end - start).total_seconds() / 60.0
+            step_durations.setdefault(row.step_name, []).append(duration)
+
+    cycle_time_data = []
+    for step, durations in step_durations.items():
+        cycle_time_data.append({
+            "step_name": step,
+            "avg_time_minutes": round(statistics.mean(durations), 2),
+            "sample_size": len(durations)
+        })
+
+    # ======================================================
+    # 7. BATCH AGING & TRENDS
+    # ======================================================
+    now = datetime.now()
+    stuck_batches = []
+    total_age = 0
+    
+    for row in active_assignments:
+        assigned_date = parse_db_date(row.assignment_date)
+        if assigned_date:
+            age = (now - assigned_date).total_seconds() / 86400
+            total_age += age
+            if age > 5:
+                pcb_info = db.query(PcbData.serialNo).filter(PcbData.PCBserialNoPartNumber == row.assigned_pcb_id).first()
+                step_info = db.query(ProcessFlowMaster.step_name).filter(ProcessFlowMaster.step_order == row.current_step_id).first()
+                stuck_batches.append({
+                    "assignment_id": row.assignment_id,
+                    "pcb_id": pcb_info.serialNo if pcb_info else "N/A",
+                    "age_days": round(age, 1),
+                    "current_step_name": step_info.step_name if step_info else "Unknown"
+                })
+    
+    avg_age = (total_age / len(active_assignments)) if active_assignments else 0
+
+    daily_trend = (
+        db.query(cast(PcbData.createdAt, Date).label("date"), func.count(PcbData.ID).label("count"))
+        .filter(PcbData.createdAt.isnot(None))
+        .group_by(cast(PcbData.createdAt, Date))
+        .order_by(cast(PcbData.createdAt, Date))
+        .all()
+    )
+
+    overall_task_data = []
+    all_steps = db.query(ProcessFlowMaster).all()
+    for s in all_steps:
+        cap = db.query(OperatorStepMapping).filter(OperatorStepMapping.flow_step_id == s.step_order).count()
+        overall_task_data.append({"step": s.step_name, "order": s.step_order, "staff_capacity": cap})
+
+    return {
+        "pcb_types": pcb_type_distribution,
+        "pcb_statuses": pcb_status_distribution,
+        "production_flow": production_flow,
+        "overall_operation_wise": overall_operation_wise,
+        "operator_load": operator_load_data,
+        "overall_operator_wise": overall_operator_wise,
+        "cycle_time": cycle_time_data,
+        "Overall_Task_Data": overall_task_data,
+        "batch_aging": {
+            "average_wip_age_days": round(avg_age, 1),
+            "stuck_count": len(stuck_batches),
+            "stuck_list": stuck_batches
+        },
+        "order_trend": [{"date": str(r.date), "count": r.count} for r in daily_trend]
+    }
+
+
+
 
 
 
