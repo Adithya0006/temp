@@ -1,5 +1,5 @@
 
-@app.get("/view")
+@app.get("/operatordashboard")
 def operator_view(staff_no: str, db: Session = Depends(init_db)):
     staff = normalize_staff(staff_no)
     user = find_user_from_profiles(db, staff)
