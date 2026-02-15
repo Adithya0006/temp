@@ -1,0 +1,42 @@
+import uvicorn
+from fastapi import FastAPI, UploadFile, File
+import shutil
+import os
+import traceback
+
+app = FastAPI()
+
+# Base Directory where received files will be stored
+SAVE_DIR = "D:\\INDUSTRY4.0Server\\node_Server\\node_Server\\src\\incoming-files"
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# NEW: Route now accepts machine_id to create sub-folders
+@app.post("/upload/{machine_id}")
+async def upload_file(machine_id: str, file: UploadFile = File(...)):
+    # Create sub-folder for specific machine
+    machine_path = os.path.join(SAVE_DIR, machine_id)
+    os.makedirs(machine_path, exist_ok=True)
+    
+    file_location = os.path.join(machine_path, file.filename)
+    
+    # Save the file to the machine-specific sub-folder
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    print(f"Received from {machine_id} and saved: {file.filename}")
+    return {"info": f"file '{file.filename}' saved at {file_location}", "machine": machine_id}
+
+if __name__ == "__main__":
+    print(">>> STARTING FASTAPI RECEIVER SERVER <<<")
+    try:
+        # Host 0.0.0.0 allows connection from any Machine on the network
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8001,
+            log_level="info"
+        )
+    except Exception:
+        print(">>> SERVER FAILED <<<")
+        traceback.print_exc()
+        input("Press Enter to exit...")
