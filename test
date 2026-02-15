@@ -1,0 +1,135 @@
+import time
+import requests
+import os
+import sys
+import configparser  # Library to read .ini files
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+# --- LOAD CONFIGURATION ---
+def load_config():
+    config = configparser.ConfigParser()
+    config_file = 'config.ini'
+    
+    # Check if config file exists
+    if not os.path.exists(config_file):
+        print(f"ERROR: '{config_file}' not found!")
+        print("Please create a config.ini file next to the exe with 'watch_directory', 'receiver_ip', and 'machine_id'.")
+        input("Press Enter to exit...") 
+        sys.exit(1)
+
+    try:
+        config.read(config_file)
+        watch_dir = config['Settings']['watch_directory']
+        ip = config['Settings']['receiver_ip']
+        port = config['Settings'].get('port', '8001') 
+        # NEW: Load Machine ID to identify which assembly line this is
+        machine_id = config['Settings'].get('machine_id', 'Unknown_Machine')
+        
+        # Updated URL to send files to a machine-specific folder on the server
+        url = f"http://{ip}:{port}/upload/{machine_id}"
+        
+        return watch_dir, url, machine_id
+    except KeyError as e:
+        print(f"ERROR: Missing setting in config.ini: {e}")
+        input("Press Enter to exit...")
+        sys.exit(1)
+
+# Load settings immediately
+WATCH_DIRECTORY, RECEIVER_URL, MACHINE_ID = load_config()
+
+print(f"--- CONFIGURATION LOADED ---")
+print(f"Machine ID: {MACHINE_ID}")
+print(f"Watching:   {WATCH_DIRECTORY}")
+print(f"Target:     {RECEIVER_URL}")
+print(f"----------------------------")
+
+class FileSenderHandler(FileSystemEventHandler):
+    """
+    Handles file system events (New file or Modified file).
+    """
+    def on_created(self, event):
+        if not event.is_directory:
+            print(f"New file detected: {event.src_path}")
+            send_file(event.src_path)
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            print(f"File modified: {event.src_path}")
+            send_file(event.src_path)
+
+def send_file(filepath):
+    """
+    Helper function to actually upload the file via HTTP.
+    """
+    filename = os.path.basename(filepath)
+    
+    # Ignore temporary files often created by Excel (start with ~$)
+    if filename.startswith("~$"):
+        return
+
+    print(f"Attempting to send: {filename} from {MACHINE_ID}...")
+
+    # Retry logic
+    attempts = 0
+    max_retries = 3
+    
+    while attempts < max_retries:
+        try:
+            with open(filepath, 'rb') as f:
+                files = {'file': (filename, f)}
+                response = requests.post(RECEIVER_URL, files=files) 
+                
+            if response.status_code == 200:
+                print(f"SUCCESS: {filename} sent.")
+                return
+            else:
+                print(f"Server Error: {response.status_code}")
+                
+        except requests.exceptions.ConnectionError:
+            print(f"Connection failed: Cannot reach {RECEIVER_URL}")
+            break 
+        except PermissionError:
+            print(f"File locked. Retrying ({attempts+1}/{max_retries})...")
+            time.sleep(1)
+        except Exception as e:
+            print(f"Error sending {filename}: {e}")
+            break
+            
+        attempts += 1
+
+def sync_existing_files():
+    """
+    Runs ONCE at startup to send all files currently in the folder.
+    """
+    print("--- Starting Initial Sync ---")
+    if not os.path.exists(WATCH_DIRECTORY):
+        print(f"Directory {WATCH_DIRECTORY} not found. Creating it.")
+        os.makedirs(WATCH_DIRECTORY)
+
+    files = os.listdir(WATCH_DIRECTORY)
+    if not files:
+        print("Folder is empty. No existing files to sync.")
+    
+    for filename in files:
+        filepath = os.path.join(WATCH_DIRECTORY, filename)
+        if os.path.isfile(filepath):
+            send_file(filepath)
+            
+    print("--- Initial Sync Complete ---")
+
+if __name__ == "__main__":
+    sync_existing_files()
+    event_handler = FileSenderHandler()
+    observer = Observer()
+    observer.schedule(event_handler, WATCH_DIRECTORY, recursive=False)
+    
+    print(f"\nMonitoring {WATCH_DIRECTORY} for changes...")
+    observer.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
