@@ -17,3 +17,30 @@ machine_id = AOI_Machine_03
 watch_directory = C:\Users\Operator\Desktop\Results
 receiver_ip = 192.168.0.20
 port = 8001
+
+
+
+
+
+
+
+
+
+
+
+
+
+try {
+  const response = await axios.get("https://api.example.com/users", {
+    headers: {
+      Authorization: "Bearer mytoken"
+    },
+    params: {
+      id: 10
+    }
+  });
+
+  console.log(response.data);
+} catch (error) {
+  console.log(error.response);
+}
