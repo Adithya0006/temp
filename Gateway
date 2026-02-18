@@ -1,0 +1,157 @@
+Perfect ✅
+Here are GET, POST, PUT, DELETE using async/await + try/catch properly structured.
+
+Assume you already have:
+
+// api.js
+import axios from "axios";
+
+const api = axios.create({
+  baseURL: "https://api.example.com",
+  headers: {
+    "Content-Type": "application/json"
+  }
+});
+
+export default api;
+
+
+---
+
+✅ 1️⃣ GET (All Users)
+
+const getUsers = async () => {
+  try {
+    const response = await api.get("/users");
+    console.log("Users:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("Error fetching users:", error.response?.data || error.message);
+  }
+};
+
+
+---
+
+✅ 2️⃣ GET (With Query Params)
+
+const getUsersWithParams = async () => {
+  try {
+    const response = await api.get("/users", {
+      params: {
+        page: 1,
+        limit: 10
+      }
+    });
+
+    console.log("Filtered Users:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("Error:", error.response?.data || error.message);
+  }
+};
+
+
+---
+
+✅ 3️⃣ GET (By ID – Path Param)
+
+const getUserById = async (id) => {
+  try {
+    const response = await api.get(`/users/${id}`);
+    console.log("Single User:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("Error fetching user:", error.response?.data || error.message);
+  }
+};
+
+
+---
+
+✅ 4️⃣ POST (Create User)
+
+const createUser = async (userData) => {
+  try {
+    const response = await api.post("/users", userData);
+    console.log("User Created:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("Error creating user:", error.response?.data || error.message);
+  }
+};
+
+Example call:
+
+createUser({
+  name: "Adithya",
+  age: 21
+});
+
+
+---
+
+✅ 5️⃣ PUT (Update User)
+
+const updateUser = async (id, updatedData) => {
+  try {
+    const response = await api.put(`/users/${id}`, updatedData);
+    console.log("User Updated:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("Error updating user:", error.response?.data || error.message);
+  }
+};
+
+
+---
+
+✅ 6️⃣ DELETE (Remove User)
+
+const deleteUser = async (id) => {
+  try {
+    const response = await api.delete(`/users/${id}`);
+    console.log("User Deleted:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("Error deleting user:", error.response?.data || error.message);
+  }
+};
+
+
+---
+
+🧠 Professional Pattern (Service File Style)
+
+Instead of console.log inside function, better:
+
+export const getUsers = async () => {
+  try {
+    const res = await api.get("/users");
+    return res.data;
+  } catch (error) {
+    throw error.response?.data || error.message;
+  }
+};
+
+Then in component:
+
+try {
+  const users = await getUsers();
+  console.log(users);
+} catch (err) {
+  console.error(err);
+}
+
+This is clean architecture 👌
+
+
+---
+
+If you want next, I can show:
+
+🔥 How to handle loading state in React
+
+🔐 How to attach token automatically
+
+🧠 Difference between PUT vs PATCH (interview important)
