@@ -1,0 +1,285 @@
+To implement stage-specific file tracing from designated machine folders, we need to modify four files. This update ensures that when an operator opens a form for a specific stage, the system only looks for files in the folder belonging to the machine associated with that stage.
+
+### Files to be changed:
+
+1. **`index.js`**: Update the local watcher to organize files by `[MachineID][SerialNumber]`.
+2. **`formConfigs.js`**: Map each assembly stage to a specific `machine_folder`.
+3. **`api.js`**: Update the check function to accept the machine ID.
+4. **`ProcessForm.js`**: Update the auto-link and batch-check logic to use stage-specific machine folders.
+
+---
+
+### 1. `index.js` (Node.js Local Watcher)
+
+**Changes:** The `detectedFiles` object is now a nested map to prevent serial number collisions between different machines.
+
+```javascript
+// ... (Previous imports and setup remain unchanged)
+
+const WATCH_PATH = path.join(__dirname1, 'incoming-files');
+if (!fs.existsSync(WATCH_PATH)) fs.mkdirSync(WATCH_PATH);
+
+// NEW STRUCTURE: { "Machine_A": { "123": "123.pdf" }, "Machine_B": { "123": "123.html" } }
+let detectedFiles = {}; 
+
+/** * 1. RECURSIVE INITIAL SCAN: 
+ * Maps files by MachineID -> SerialNumber
+ */
+const initialScan = (directory) => {
+    const items = fs.readdirSync(directory);
+    items.forEach(item => {
+        const fullPath = path.join(directory, item);
+        if (fs.statSync(fullPath).isDirectory()) {
+            initialScan(fullPath); 
+        } else {
+            const match = item.match(/\d+/);
+            if (match) {
+                const serial = match[0];
+                const machineName = path.basename(directory);
+                
+                // Initialize machine object if it doesn't exist
+                if (!detectedFiles[machineName]) detectedFiles[machineName] = {};
+                detectedFiles[machineName][serial] = item;
+            }
+        }
+    });
+};
+
+initialScan(WATCH_PATH);
+console.log("Initial scan complete. Current mapping by Machine ID:", detectedFiles);
+
+/** * 2. RECURSIVE LIVE WATCHER: 
+ */
+fs.watch(WATCH_PATH, { recursive: true }, (eventType, filename) => {
+    if (filename && eventType === 'rename') {
+        const fullPath = path.join(WATCH_PATH, filename);
+        
+        if (fs.existsSync(fullPath)) {
+            if (!fs.statSync(fullPath).isDirectory()) {
+                const match = path.basename(filename).match(/\d+/); 
+                if (match) {
+                    const serial = match[0];
+                    const machineName = path.dirname(filename); // Extracts the machine folder name
+                    
+                    if (!detectedFiles[machineName]) detectedFiles[machineName] = {};
+                    detectedFiles[machineName][serial] = path.basename(filename);
+                    console.log(`Updated Serial ${serial} in folder ${machineName}`);
+                }
+            }
+        } else {
+            // Cleanup on deletion
+            const deletedFileName = path.basename(filename);
+            const machineName = path.dirname(filename);
+            if (detectedFiles[machineName]) {
+                for (const serial in detectedFiles[machineName]) {
+                    if (detectedFiles[machineName][serial] === deletedFileName) {
+                        delete detectedFiles[machineName][serial];
+                    }
+                }
+            }
+        }
+    }
+});
+
+// UPDATED: Endpoint now requires machine_id to find the specific file
+app.get('/check-file/:machine_id/:serial', (req, res) => {
+  const { machine_id, serial } = req.params;
+  if (detectedFiles[machine_id] && detectedFiles[machine_id][serial]) {
+      res.json({ found: true, fileName: detectedFiles[machine_id][serial] });
+  } else {
+      res.json({ found: false });
+  }
+});
+
+// UPDATED: Batch check now filters by machine_id
+app.post('/check-batch-files/:machine_id', (req, res) => {
+  const { machine_id } = req.params;
+  const { serials } = req.body;
+  const results = {};
+  serials.forEach(s => {
+      results[s] = !!(detectedFiles[machine_id] && detectedFiles[machine_id][s]);
+  });
+  res.json(results);
+});
+
+// ... (Rest of the file remains unchanged)
+
+```
+
+---
+
+### 2. `formConfigs.js` (Mapping Stages to Folders)
+
+**Changes:** Added `machine_folder` to relevant stages. This MUST match the `machine_id` set in the machine's `config.ini`.
+
+```javascript
+export const LOCAL_FORM_CONFIGS = {
+  "5": {
+    "stage_name": "Solder Paste Inspection - Top Side",
+    "machine_folder": "SPI_Machine_01", // Added machine folder tracing
+    "fields": [
+      { "key": "program_details", "label": "Program Details", "type": "text" },
+      { "key": "spc_data_ovenrider", "label": "SPC Data from Ovenrider", "type": "text" },
+      { "key": "profile_data_file", "label": "Profile Data from machine (.pdf)", "type": "file", "accept": ".pdf" },
+      { "key": "equipment_details", "label": "Equipment Details", "type": "text" },
+      { "key": "equipment_id", "label": "Equipment ID", "type": "text" }
+    ]
+  },
+  "6": {
+    "stage_name": "Pick n Place - Top side",
+    "machine_folder": "PNP_Machine_02", // Map this stage to PNP machine files
+    "fields": [
+      { "key": "program_details", "label": "Program Details", "type": "text" },
+      { "key": "traceability_data_file", "label": "Traceability Data from machine (.html)", "type": "file", "accept": ".html,.htm" },
+      { "key": "equipment_name", "label": "Equipment Name", "type": "text" },
+      { "key": "equipment_id", "label": "Equipment ID", "type": "text" }
+    ]
+  },
+  "15": {
+    "stage_name": "AOI Inspection",
+    "machine_folder": "AOI_Machine_03", // Map this stage to AOI machine files
+    "fields": [
+      { "key": "aoi_remarks_file", "label": "AOI Remarks File", "type": "file" },
+      { "key": "equipment_details", "label": "Equipment Details", "type": "text" }
+    ]
+  }
+  // Add "machine_folder" to any other stage that generates automated files
+};
+
+```
+
+---
+
+### 3. `api.js` (Frontend API)
+
+**Changes:** Updated the local watcher helpers to pass the `machineId`.
+
+```javascript
+import axios from "axios";
+
+// ... (DynamicApi function remains unchanged)
+
+const LOCAL_WATCHER_URL = "http://localhost:8082";
+
+// Local Watcher helpers - NOW INCLUDES machineId
+export const checkForLocalFile = async (machineId, serial) => {
+    if (!machineId) return { found: false }; 
+    try {
+        const res = await axios.get(`${LOCAL_WATCHER_URL}/check-file/${machineId}/${serial}`);
+        return res.data;
+    } catch (err) { return { found: false }; }
+};
+
+export const checkBatchFilesLocal = async (machineId, serials) => {
+    if (!machineId) return {};
+    try {
+        const res = await axios.post(`${LOCAL_WATCHER_URL}/check-batch-files/${machineId}`, { serials });
+        return res.data;
+    } catch (err) { return {}; }
+};
+
+// ... (Rest of existing API calls remain unchanged)
+
+```
+
+---
+
+### 4. `ProcessForm.js` (Frontend Form)
+
+**Changes:** Updated `autoLink` and `checkBatch` logic to use `form.machine_folder`.
+
+```javascript
+// ... (Imports remain unchanged)
+
+export default function ProcessForm({ 
+  form, savedData, onSubmit, FilteredData, actionType, 
+  onFetchLastData, onFetchDataBySerial, currentSerial 
+}) {
+  // ... (State variables remain unchanged)
+
+  const hasFileField = useMemo(() => form.fields.some(f => f.type === "file"), [form]);
+  const machineId = form.machine_folder; // Retrieve machine ID for this stage
+
+  const otherPcbs = useMemo(() => {
+    return (FilteredData || []).filter(item => 
+      item.serialNo !== currentSerial && item.serialNo !== "null" && item.serialNo !== null
+    );
+  }, [FilteredData, currentSerial]);
+
+  // ... (handleResetForm and handlePastePrevious remain unchanged)
+
+  // --- UPDATED: Batch File Presence Indicators with machine folder filter ---
+  useEffect(() => {
+    const checkBatch = async () => {
+      if (otherPcbs.length > 0 && hasFileField && machineId) {
+        const serials = otherPcbs.map(p => p.serialNo);
+        const results = await checkBatchFilesLocal(machineId, serials);
+        setBatchFileStatus(results);
+      }
+    };
+    checkBatch();
+  }, [otherPcbs, hasFileField, machineId]);
+
+  // --- UPDATED: Auto-link main file using stage-specific machine folder ---
+  useEffect(() => {
+    const autoLink = async () => {
+      if (actionType !== 'view' && currentSerial && hasFileField && machineId) {
+        const result = await checkForLocalFile(machineId, currentSerial);
+        if (result.found) {
+          const fileField = form.fields.find(f => f.type === "file");
+          if (fileField && !values[fileField.key]) handleChange(fileField.key, result.fileName);
+        }
+      }
+    };
+    autoLink();
+  }, [currentSerial, actionType, form.fields, hasFileField, machineId]);
+
+  // ... (handleSearchBySerial and other useEffects remain unchanged)
+
+  // ... (Validation and toggle handlers remain unchanged)
+
+  return (
+    <Paper elevation={3} sx={{ p: 4, borderRadius: 3 }}>
+      {/* ... (Header and Search section remain unchanged) */}
+
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, mt: 3 }}>
+        {form.fields.map(f => (
+          <Box key={f.key}>
+            {f.type === "file" ? (
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Button variant="outlined" component="label" fullWidth sx={{ p: 2, borderStyle: 'dashed' }}>
+                  {values[f.key] ? `✅ ${values[f.key]}` : `📂 Upload ${f.label} *`}
+                  <input type="file" hidden onChange={e => handleChange(f.key, e.target.files[0]?.name)} />
+                </Button>
+                {/* Visual indicator if file was auto-traced from local machine folder */}
+                {values[f.key] && machineId && (
+                    <Tooltip title={`Auto-linked from ${machineId}`}>
+                        <Chip label="Auto-Linked" size="small" color="success" variant="outlined" sx={{ ml: 1 }} />
+                    </Tooltip>
+                )}
+                {values[f.key] && actionType !== 'view' && (
+                  <IconButton color="error" onClick={() => handleChange(f.key, "")}><DeleteIcon /></IconButton>
+                )}
+              </Stack>
+            ) : (
+                // ... (Checkbox and TextFields remain unchanged)
+            )}
+          </Box>
+        ))}
+      </Box>
+
+      {/* ... (Batch Select Accordion and Submit buttons remain unchanged) */}
+    </Paper>
+  );
+}
+
+```
+
+### Summary of Changes made:
+
+1. **Strict Isolation**: The Node.js server now looks in `incoming-files/[MachineID]/[Serial]`.
+2. **Configuration Linkage**: Added `machine_folder` to `formConfigs.js`. If Stage 15 is active, the frontend asks the watcher for files inside the `AOI_Machine_03` folder specifically.
+3. **Conflict Prevention**: If multiple machines generate files for the same Serial Number, the system will only link the one belonging to the current process stage.
+4. **Backend Traceability**: The API endpoints now include the `machine_id` as a parameter to ensure precise file verification.
+
+**Next Step**: Ensure that the `machine_folder` names you add to `formConfigs.js` exactly match the `machine_id` values used in the `config.ini` files of your assembly line machines.
