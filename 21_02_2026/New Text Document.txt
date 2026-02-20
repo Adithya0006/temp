@@ -1,0 +1,400 @@
+import {
+  Box, TextField, Button, Typography, Paper, Stack, CircularProgress,
+  IconButton, Checkbox, FormControlLabel, FormGroup,
+  Accordion, AccordionSummary, AccordionDetails, Divider, Tooltip, Chip
+} from "@mui/material";
+import { useState, useEffect, useMemo } from "react";
+import {
+  ContentPaste as ContentPasteIcon,
+  Search as SearchIcon,
+  ExpandMore as ExpandMoreIcon,
+  Delete as DeleteIcon,
+  RestartAlt as RestartAltIcon,
+  FilePresent as FilePresentIcon,
+  FileDownloadOff as FileDownloadOffIcon,
+  Visibility as VisibilityIcon // NEW: Added for preview
+} from "@mui/icons-material";
+import { checkForLocalFile, checkBatchFilesLocal } from "./api";
+
+export default function ProcessForm({ 
+  form, savedData, onSubmit, FilteredData, actionType, 
+  onFetchLastData, onFetchDataBySerial, currentSerial 
+}) {
+  const [values, setValues] = useState({});
+  const [batchSelection, setBatchSelection] = useState({});
+  const [batchFileStatus, setBatchFileStatus] = useState({});
+  const [isValid, setIsValid] = useState(false);
+  const [pasting, setPasting] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchSerial, setSearchSerial] = useState("");
+
+  const hasFileField = useMemo(() => form.fields.some(f => f.type === "file"), [form]);
+  const machineId = form.machine_folder;
+
+  const otherPcbs = useMemo(() => {
+    return (FilteredData || []).filter(item => 
+      item.serialNo !== currentSerial && item.serialNo !== "null" && item.serialNo !== null
+    );
+  }, [FilteredData, currentSerial]);
+
+  // --- Reset Form ---
+  const handleResetForm = () => {
+    if (window.confirm("Are you sure you want to clear all inputs for this PCB?")) {
+      setValues({});
+    }
+  };
+
+  const handlePastePrevious = async () => {
+    if (!onFetchLastData) return;
+    setPasting(true);
+    const dbData = await onFetchLastData();
+    setPasting(false);
+    if (dbData && Object.keys(dbData).length > 0) {
+      setValues(prev => ({ ...prev, ...dbData }));
+    } else {
+      alert("No previous data found for this stage.");
+    }
+  };
+
+  const handleSearchBySerial = async () => {
+    if (!searchSerial.trim()) {
+        alert("Please enter a PCB Serial Number");
+        return;
+    }
+    if (!onFetchDataBySerial) return;
+    setSearching(true);
+    const dbData = await onFetchDataBySerial(searchSerial);
+    setSearching(false);
+    if (dbData && Object.keys(dbData[0]?.log_Data).length > 0) {
+      setValues(prev => ({ ...prev, ...dbData[0]?.log_Data }));
+    } else {
+      alert("No data found for this Serial Number in the current stage.");
+    }
+  };
+
+  // --- Batch File Status Logic ---
+  useEffect(() => {
+    const checkBatch = async () => {
+      if (otherPcbs.length > 0 && hasFileField && machineId) {
+        const serials = otherPcbs.map(p => p.serialNo);
+        const results = await checkBatchFilesLocal(machineId, serials);
+        setBatchFileStatus(results);
+      }
+    };
+    checkBatch();
+  }, [otherPcbs, hasFileField, machineId]);
+
+  // --- Auto-link File Logic ---
+  useEffect(() => {
+    const autoLink = async () => {
+      if (actionType !== 'view' && currentSerial && hasFileField && machineId) {
+        const result = await checkForLocalFile(machineId, currentSerial);
+        if (result.found) {
+          const fileField = form.fields.find(f => f.type === "file");
+          if (fileField && !values[fileField.key]) handleChange(fileField.key, result.fileName);
+        }
+      }
+    };
+    autoLink();
+  }, [currentSerial, actionType, form.fields, hasFileField, machineId]);
+
+  useEffect(() => {
+    if (savedData) {
+      const dataToLoad = savedData.operator_Json_log || savedData.log_Data || savedData.process_data || savedData;
+      if (dataToLoad && Object.keys(dataToLoad).length > 0) setValues(dataToLoad);
+    }
+  }, [savedData]);
+
+  // --- Validation Logic ---
+  useEffect(() => {
+    const allFilled = form.fields.every(field => {
+      if (field.type === "checkbox") return true;
+      if (field.type === "file") return values[field.key] && values[field.key].length > 0;
+      const val = values[field.key];
+      return val !== undefined && val !== null && val.toString().trim() !== "";
+    });
+
+    const selectedSerials = Object.keys(batchSelection).filter(k => batchSelection[k]);
+    const batchFilesMissing = hasFileField && machineId
+       ? selectedSerials.some(s => !batchFileStatus[s])
+       : false;
+
+    setIsValid(allFilled && !batchFilesMissing);
+  }, [values, form, batchSelection, batchFileStatus, hasFileField, machineId]);
+
+  const handleChange = (key, value) => setValues(prev => ({ ...prev, [key]: value }));
+
+  const handleBatchToggle = (serial) => {
+    setBatchSelection(prev => ({ ...prev, [serial]: !prev[serial] }));
+  };
+
+  const handleSelectAllBatch = (e) => {
+    const newSelection = {};
+    if (e.target.checked) otherPcbs.forEach(p => { newSelection[p.serialNo] = true; });
+    setBatchSelection(newSelection);
+  };
+
+  const handleSave = () => onSubmit(values, "Started", Object.keys(batchSelection).filter(k => batchSelection[k]));
+  const handleComplete = () => onSubmit(values, "Completed", Object.keys(batchSelection).filter(k => batchSelection[k]));
+
+  // --- NEW: Function to Open File from PC A ---
+  const handlePreview = (fileName) => {
+    // Replace with the actual IP address of PC A
+    const server_A_IP = "http://192.168.0.20:8082"; 
+    const fileUrl = `${server_A_IP}/view-incoming/${machineId}/${fileName}`;
+    window.open(fileUrl, "_blank");
+  };
+
+  return (
+    <Paper elevation={3} sx={{ p: 4, borderRadius: 3 }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+        <Typography variant="h5" fontWeight="bold" color="primary">{form.stage_name}</Typography>
+        <Stack direction="row" spacing={1}>
+          <Button startIcon={<RestartAltIcon />} color="warning" size="small" onClick={handleResetForm} disabled={actionType === 'view'}>Reset Form</Button>
+          {actionType !== 'view' && (
+            <Button variant="outlined" size="small" startIcon={pasting ? <CircularProgress size={16} /> : <ContentPasteIcon />} onClick={handlePastePrevious}>Paste Last</Button>
+          )}
+        </Stack>
+      </Stack>
+
+      {/* Search/Copy Section */}
+      {actionType !== 'view' && (
+          <Box sx={{ mb: 3, p: 2, bgcolor: "#f8fafc", borderRadius: 2, border: "1px dashed #cbd5e1" }}>
+            <Typography variant="caption" fontWeight="bold" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
+              COPY DATA FROM ANOTHER PCB
+            </Typography>
+            <Stack direction="row" spacing={1}>
+              <TextField 
+                size="small" 
+                placeholder="Enter PCB Serial No..." 
+                value={searchSerial}
+                onChange={(e) => setSearchSerial(e.target.value)}
+                sx={{ bgcolor: "white", flexGrow: 1 }}
+              />
+              <Button 
+                variant="contained" 
+                color="secondary" 
+                startIcon={searching ? <CircularProgress size={20} color="inherit" /> : <SearchIcon />}
+                onClick={handleSearchBySerial}
+                disabled={searching || !searchSerial}
+              >
+                Search & Copy
+              </Button>
+            </Stack>
+          </Box>
+      )}
+
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, mt: 3 }}>
+        {form.fields.map(f => (
+          <Box key={f.key}>
+            {f.type === "file" ? (
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Button variant="outlined" component="label" fullWidth sx={{ p: 2, borderStyle: 'dashed' }}>
+                  {values[f.key] ? `✅ ${values[f.key]}` : `📂 Upload ${f.label} *`}
+                  <input type="file" hidden onChange={e => handleChange(f.key, e.target.files[0]?.name)} />
+                </Button>
+                
+                {/* NEW: PREVIEW BUTTON */}
+                {values[f.key] && machineId && (
+                    <Tooltip title="Preview File from Server">
+                        <IconButton color="primary" onClick={() => handlePreview(values[f.key])}>
+                            <VisibilityIcon />
+                        </IconButton>
+                    </Tooltip>
+                )}
+
+                {values[f.key] && machineId && (
+                    <Tooltip title={`Auto-linked from ${machineId}`}>
+                        <Chip label="Auto-Linked" size="small" color="success" variant="outlined" />
+                    </Tooltip>
+                )}
+
+                {values[f.key] && actionType !== 'view' && (
+                  <IconButton color="error" onClick={() => handleChange(f.key, "")}><DeleteIcon /></IconButton>
+                )}
+              </Stack>
+            ) : f.type === "checkbox" ? (
+              <FormControlLabel control={<Checkbox checked={!!values[f.key]} onChange={e => handleChange(f.key, e.target.checked)} />} label={f.label} />
+            ) : (
+              <TextField label={f.label} fullWidth value={values[f.key] || ""} onChange={e => handleChange(f.key, e.target.value)} />
+            )}
+          </Box>
+        ))}
+      </Box>
+
+      {/* Batch Select Section */}
+      {otherPcbs.length > 0 && actionType !== 'view' && (
+        <Accordion sx={{ mt: 4 }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography fontWeight="bold">
+              {hasFileField && machineId ? `Batch Select (Traced from ${machineId})` : "Apply Data to Other PCBs"}
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <FormControlLabel label="Select All" control={<Checkbox onChange={handleSelectAllBatch} />} />
+            <Divider sx={{ my: 1 }} />
+            <FormGroup row>
+              {otherPcbs.map(pcb => {
+                const hasFile = batchFileStatus[pcb.serialNo];
+                return (
+                  <Box key={pcb.serialNo} sx={{ width: '33%', display: 'flex', alignItems: 'center' }}>
+                    <Checkbox checked={!!batchSelection[pcb.serialNo]} onChange={() => handleBatchToggle(pcb.serialNo)} />
+                    <Typography variant="body2" sx={{ mr: 1 }}>{pcb.serialNo}</Typography>
+                    {hasFileField && machineId && (
+                        hasFile ? <Tooltip title="File Found"><FilePresentIcon color="success" fontSize="small" /></Tooltip> : 
+                               <Tooltip title="File Missing"><FileDownloadOffIcon color="error" fontSize="small" /></Tooltip>
+                    )}
+                  </Box>
+                );
+              })}
+            </FormGroup>
+          </AccordionDetails>
+        </Accordion>
+      )}
+
+      <Stack direction="row" spacing={2} sx={{ mt: 4, justifyContent: "flex-end" }}>
+        {actionType === 'Start' && <Button variant="outlined" onClick={handleSave}>Save Progress</Button>}
+        <Button variant="contained" color="success" onClick={handleComplete} disabled={!isValid}>
+          Complete Task
+        </Button>
+      </Stack>
+    </Paper>
+  );
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+To address these updates, we need to modify the **Node.js Server (A)** to allow file viewing, the **Python Sender (B)** to fix the upload trigger, and the **React Frontend (C)** to add the preview functionality.
+
+### 1. Fixing the Auto-Upload (`test.py` on PC B)
+
+The reason files are detected but not uploading is likely due to the script only looking for "New" files created while it is running. I have updated the `on_created` and `on_modified` events to be more aggressive and added a small delay to ensure the machine has finished writing the file before the upload starts.
+
+**Update these sections in `test.py`:**
+
+```python
+class FileSenderHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        if not event.is_directory:
+            # Small delay to let machine finish writing
+            time.sleep(0.5) 
+            print(f"Detected new file: {event.src_path}")
+            send_file(event.src_path)
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            # Modified events can trigger multiple times; send_file handles retries
+            print(f"Detected modification: {event.src_path}")
+            send_file(event.src_path)
+
+```
+
+---
+
+### 2. Enabling File Preview (`index.js` on PC A)
+
+To allow PC C (the frontend) to view a file stored on PC A, the Node.js server must "serve" the `incoming-files` folder as a static directory.
+
+**Add this line to `index.js` (around the other `app.use` statements):**
+
+```javascript
+// This allows the frontend to access files via URL: http://PC_A_IP:8082/machine_id/filename
+app.use('/view-incoming', express.static(WATCH_PATH));
+
+```
+
+---
+
+### 3. Frontend Preview UI (`ProcessForm.js` on PC C)
+
+We will add a "Preview" icon that appears only when a file is detected. When clicked, it opens the file in a new browser tab.
+
+**Update the File field section in `ProcessForm.js`:**
+
+```javascript
+// Add these imports at the top
+import VisibilityIcon from "@mui/icons-material/Visibility";
+
+// Inside the form.fields.map loop, specifically for f.type === "file":
+{f.type === "file" ? (
+  <Stack direction="row" spacing={1} alignItems="center">
+    <Button variant="outlined" component="label" fullWidth sx={{ p: 2, borderStyle: 'dashed' }}>
+      {values[f.key] ? `✅ ${values[f.key]}` : `📂 Upload ${f.label} *`}
+      <input type="file" hidden onChange={e => handleChange(f.key, e.target.files[0]?.name)} />
+    </Button>
+    
+    {/* NEW: Preview Button */}
+    {values[f.key] && machineId && (
+      <Tooltip title="Preview Uploaded File">
+        <IconButton 
+          color="primary" 
+          onClick={() => {
+            // Construct the URL to PC A's static folder
+            const pcA_IP = "http://192.168.0.20:8082"; // Use PC A's actual IP
+            const fileUrl = `${pcA_IP}/view-incoming/${machineId}/${values[f.key]}`;
+            window.open(fileUrl, "_blank");
+          }}
+        >
+          <VisibilityIcon />
+        </IconButton>
+      </Tooltip>
+    )}
+
+    {values[f.key] && machineId && (
+        <Tooltip title={`File traced from: ${machineId}`}>
+            <Chip label="Auto-Linked" size="small" color="success" variant="outlined" />
+        </Tooltip>
+    )}
+
+    {values[f.key] && actionType !== 'view' && (
+      <IconButton color="error" onClick={() => handleChange(f.key, "")}><DeleteIcon /></IconButton>
+    )}
+  </Stack>
+) : ... }
+
+```
+
+---
+
+### Summary of Changes and Logic
+
+1. **PC B (Sender)**: Updated `test.py` to ensure that any change (creation or modification) triggers the `send_file` function immediately.
+2. **PC A (Server)**: Exposed the `incoming-files` folder through `express.static`. This is crucial because a browser on PC C cannot "see" the hard drive of PC A directly; it needs a web URL.
+3. **PC C (Frontend)**: Added a `VisibilityIcon` button. When the operator sees "Auto-Linked," they can click the eye icon to verify the content of the PDF/HTML report before clicking "Complete Task".
+
+### Important for Setup:
+
+* **IP Mapping**: In `ProcessForm.js`, ensure the `pcA_IP` variable uses the static IP address of PC A where the Node.js server is running.
+* **Browser Security**: Browsers may block pop-ups. Ensure the operator allows pop-ups from the frontend URL so `window.open` can function.
+
+**Would you like me to add a "Zoom" modal inside the app instead of opening a new tab for the preview?**
