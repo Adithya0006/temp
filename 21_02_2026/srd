@@ -1,0 +1,54 @@
+Based on the source code and project data provided, here is the content for Section 2.0 of your **Software Requirements Description (SRD)**.
+
+---
+
+## 2.0 System Identification and Overview
+
+This section provides a high-level description of the **Operator Management & PCB Traceability System**, an industrial application designed to manage assembly line workflows and data integrity.
+
+### 2.1 Product Perspective
+
+The system is an integrated production management platform that bridges the gap between raw manufacturing data (Excel) and real-time shop floor execution. It operates as a web-based dashboard that interfaces with multiple backend servers—a Node.js server for data history and bulk uploads, and a Python server for analytics and operator task management. The system is designed to handle high-volume data (2000+ records) and provides a centralized interface for three distinct organizational levels: Administration, Supervision, and Operations.
+
+### 2.2 Product Functions
+
+The primary functions of the system are categorized by user responsibility:
+
+* **Data Ingestion & Normalization:** Bulk import of production orders from Excel with automatic range expansion (e.g., 100-105) and duplicate prevention.
+* **Workflow Configuration:** Creation of "Flow Assignments" to define manufacturing sequences and stage-specific requirements.
+* **Traceability & Analytics:** Real-time monitoring of PCB status (Inaction, Assigned, Completed) and stage-wise performance metrics via Recharts visualizations.
+* **Task Execution & Logging:** Mobile-responsive operator interfaces for starting tasks, filling stage-specific forms, and linking local machine files automatically.
+* **Hold/Inaction Management:** Ability to place PCBs on hold or restore them to the master database for reassignment.
+
+### 2.3 User Characteristics
+
+The system identifies three primary user classes:
+
+* **Administrator:** Technical users responsible for project creation, bulk data imports, and managing global system configurations.
+* **Internal Supervisor:** Operational leads who monitor production order distribution, assign workflows, and track team productivity.
+* **Operator:** Shop floor personnel who execute assembly tasks, record process data, and upload quality reports.
+
+### 2.4 Constraints
+
+* **Local File Watcher Dependency:** Automated file linking is dependent on a local watcher service running on the operator's machine at a specific URL (`http://localhost:8082`).
+* **Browser Memory:** To maintain performance with 2,000+ records, the UI must use virtualization and pagination to avoid browser crashes.
+* **Network Latency:** Bulk uploads must be processed in batches of 50 to prevent server-side timeouts on slow networks.
+* **Data Format:** The system requires Excel files to follow a loosely standardized header format for auto-detection to function.
+
+### 2.5 Assumptions and Dependencies
+
+* **Server Availability:** It is assumed that both Node.js and Python backend servers are reachable via the IPs defined in the Redux `configDetails`.
+* **Data Integrity:** It is assumed that PCB Serial Numbers are unique identifiers within a specific Project Type (e.g., HEXA vs. OCTA).
+* **Local Storage:** The system depends on the browser's `localStorage` to persist user sessions and role permissions during the active session.
+* **Third-Party Libraries:** The system depends on MUI (Material UI) for the interface, Recharts for analytics, and XLSX for client-side file parsing.
+
+### 2.6 Apportioning of Requirements
+
+In the event of a phased rollout, the following requirements may be delayed to future versions:
+
+* **Version 1.0 (Core):** Bulk upload, basic flow assignment, and operator task logging.
+* **Version 2.0 (Advanced):** Automated correction tickets (Maintenance Mode), advanced user permission management, and cross-department workload balancing.
+
+---
+
+**Would you like me to create the Section 3.0 (Specific Requirements) next, focusing on the Data Models or API Endpoints?**
