@@ -1,0 +1,130 @@
+To display equipment details for each stage, you can add a second table below your PCB data table. This table will update dynamically based on the `activeStepId` (the stage you've selected).
+
+Since you are working in the data domain for **Bharat Electronics Limited (BEL)**, keeping the UI industrial and professional is key. I've added a new `EquipmentTable` section that will appear inside your central column.
+
+### Updated TaskTabsView with Equipment Details
+
+```javascript
+/**
+ * Component: TaskTabsView
+ * Added: Dynamic Equipment Details Table below the PCB table.
+ */
+const TaskTabsView = ({ currentUser, tableData = [], AllData = [], onOpenForm, onTriggerRefresh }) => {
+  const [activeTab, setActiveTab] = useState(0);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+
+  // --- Logic for Grouping Tasks ---
+  const groupedTasks = useMemo(() => {
+    const groups = {};
+    if (tableData && tableData.length > 0) {
+      tableData.forEach((task) => {
+        const id = task.flowStepId;
+        if (!groups[id]) {
+          groups[id] = { 
+            processName: task.processName || `Step ${id}`, 
+            items: [], 
+            count: 0, 
+            hasStarted: false,
+            // Assuming equipment data might be part of the task object from your API
+            equipment: task.equipmentInfo || { name: "N/A", status: "Operational", lastCal: "2025-10-01" } 
+          };
+        }
+        AllData.forEach((tabcount) => {
+          if (task.flowStepId === tabcount.currentStepId) {
+            groups[id].count++;
+            const activeTask = tabcount.tasks?.find(t => t.flowStepId === tabcount.currentStepId);
+            if (["STARTED", "Start", "In Progress"].includes(activeTask?.status)) {
+              groups[id].hasStarted = true;
+            }
+          }
+        });
+        groups[id].items.push(task);
+      });
+    }
+    return groups;
+  }, [tableData, AllData]);
+
+  const stepIds = Object.keys(groupedTasks).sort((a, b) => parseInt(a) - parseInt(b));
+  const activeStepId = stepIds[activeTab];
+  const FilteredData = AllData.filter(item => item.currentStepId == activeStepId);
+  const currentProcessName = groupedTasks[activeStepId]?.processName || "Process Stage";
+  const currentEquipment = groupedTasks[activeStepId]?.equipment;
+
+  // --- UI Component: Equipment Details Table ---
+  const EquipmentDetailsTable = () => (
+    <Box sx={{ mt: 2 }}>
+      <Typography variant="caption" sx={{ fontWeight: 700, color: '#64748b', ml: 1, mb: 1, display: 'block', textTransform: 'uppercase' }}>
+        Stage Equipment Details
+      </Typography>
+      <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: "1px solid #e2e8f0", bgcolor: '#fdfdfd' }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow sx={{ bgcolor: '#f1f5f9' }}>
+              <TableCell sx={{ fontSize: '0.65rem', fontWeight: 'bold', py: 0.5 }}>Equipment Name</TableCell>
+              <TableCell sx={{ fontSize: '0.65rem', fontWeight: 'bold', py: 0.5 }}>Status</TableCell>
+              <TableCell sx={{ fontSize: '0.65rem', fontWeight: 'bold', py: 0.5 }}>Last Maintenance</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            <TableRow>
+              <TableCell sx={{ fontSize: '0.65rem' }}>{currentEquipment?.name || "Standard Production Unit"}</TableCell>
+              <TableCell sx={{ fontSize: '0.65rem' }}>
+                <Chip label={currentEquipment?.status || "Ready"} size="small" color="success" variant="outlined" sx={{ height: 16, fontSize: '0.55rem' }} />
+              </TableCell>
+              <TableCell sx={{ fontSize: '0.65rem' }}>{currentEquipment?.lastCal || "Not Logged"}</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Box>
+  );
+
+  // ... (keep handleTabChange, handleStartClick, handleCompleteClick, renderTabButton the same)
+
+  return (
+    <Box sx={{ width: '100%', mt: -1 }}>
+      {/* Title & Legend Header (Same as before) */}
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', mb: 2, position: 'relative' }}>
+        <Box sx={{ textAlign: 'center' }}>
+          <Typography variant="h6" sx={{ fontWeight: 800, color: '#1e293b' }}>{currentProcessName.toUpperCase()}</Typography>
+          <Typography variant="caption" color="text.secondary">Currently processing {FilteredData.length} units</Typography>
+        </Box>
+        {/* ... (Keep Legend Stack) */}
+      </Box>
+
+      <Grid container spacing={1}>
+        <Grid item xs={12} md={2.8}>
+           <Box sx={{ display: 'flex', flexDirection: 'column' }}>{leftSideIds.map(id => renderTabButton(id))}</Box>
+        </Grid>
+
+        <Grid item xs={12} md={6.4}>
+          {/* 1) Main PCB Table */}
+          <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: "1px solid #e2e8f0" }}>
+            <Table stickyHeader size="small">
+              {/* ... (Keep TableHead and TableBody for PCBs) */}
+            </Table>
+            <TablePagination /* ... */ />
+          </TableContainer>
+
+          {/* 2) NEW: Equipment Details Table */}
+          <EquipmentDetailsTable />
+        </Grid>
+
+        <Grid item xs={12} md={2.8}>
+           <Box sx={{ display: 'flex', flexDirection: 'column' }}>{rightSideIds.map(id => renderTabButton(id))}</Box>
+        </Grid>
+      </Grid>
+    </Box>
+  );
+};
+
+```
+
+### Key UI Features Added:
+
+* **Contextual Data:** The `EquipmentDetailsTable` uses the `activeStepId` to show specific info for the stage you clicked on.
+* **Compact Design:** Using `size="small"` and `variant="caption"` ensures this new table doesn't push your production tasks off the screen.
+* **BEL-Ready Styling:** The background of the equipment table is a subtle `#fdfdfd` with indigo/slate accents to match the professional Industry 4.0 dashboard you are building.
+
+**Would you like me to add a chart showing the equipment's recent performance or uptime next to this table?**
