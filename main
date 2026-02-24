@@ -1,14 +1,4 @@
-from fastapi import APIRouter, Request, Query, Depends, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import select
-from typing import List
-import urllib.parse
-from datetime import datetime
-
-router = APIRouter()
-
-
-@router.post("/supervisor/assign")
+@app.post("/supervisor/assign")
 def supervisor_assign(
     request: Request,
     supervisor_staff_no: str = Query(...),
@@ -16,17 +6,19 @@ def supervisor_assign(
     db: Session = Depends(init_db)
 ):
     """
-    Supervisor assignment endpoint.
+    Supervisor Assignment Endpoint
 
     Supports:
-    - Fresh assignment (CHILD boards)
-    - Workflow continuation (MAIN boards)
-    - Duplicate protection
+    - Fresh CHILD assignment
+    - Fresh MAIN assignment
+    - MAIN continuation after CHILD completed
+    - Safe reopening of workflow
+    - Duplicate step protection
     """
 
-    # ---------------------------------------------------------
-    # 1️⃣ Extract PCB list (Fallback if parsing fails)
-    # ---------------------------------------------------------
+    # =========================================================
+    # 1️⃣ Extract PCB List (Fallback if FastAPI fails parsing)
+    # =========================================================
     if not pcb_serial_parts:
         raw_qs = request.scope.get("query_string", b"").decode()
         parsed = urllib.parse.parse_qs(raw_qs)
@@ -40,9 +32,9 @@ def supervisor_assign(
     if not pcb_serial_parts:
         raise HTTPException(status_code=400, detail="No PCB serial numbers provided")
 
-    # ---------------------------------------------------------
+    # =========================================================
     # 2️⃣ Validate Supervisor
-    # ---------------------------------------------------------
+    # =========================================================
     supervisor = find_user_from_profiles(db, supervisor_staff_no)
 
     if not supervisor:
@@ -55,9 +47,9 @@ def supervisor_assign(
     ):
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # ---------------------------------------------------------
-    # 3️⃣ Load Process Flow
-    # ---------------------------------------------------------
+    # =========================================================
+    # 3️⃣ Load Full Process Flow
+    # =========================================================
     flow = db.query(ProcessFlowMaster)\
              .order_by(ProcessFlowMaster.step_order.asc())\
              .all()
@@ -66,6 +58,8 @@ def supervisor_assign(
         raise HTTPException(status_code=500, detail="Process flow empty")
 
     first_step_id = flow[0].flow_step_id
+
+    # Find step_order = 15
     step_15_id = next(
         (s.flow_step_id for s in flow if s.step_order == 15),
         None
@@ -73,9 +67,9 @@ def supervisor_assign(
 
     assign_count = 0
 
-    # ---------------------------------------------------------
+    # =========================================================
     # 4️⃣ Iterate Through Each PCB
-    # ---------------------------------------------------------
+    # =========================================================
     for raw_id in pcb_serial_parts:
 
         pcb = db.execute(
@@ -89,68 +83,88 @@ def supervisor_assign(
 
         pcb_type = (pcb.Type or "").strip().upper()
 
-        # ---------------------------------------------------------
-        # Check Existing Active Assignment
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # Check Existing Assignment (even if completed)
+        # -----------------------------------------------------
         existing_assignment = db.execute(
             select(PCBAssignment)
             .where(PCBAssignment.assigned_pcb_id == raw_id)
-            .where(PCBAssignment.overall_status != "COMPLETED")
         ).scalar_one_or_none()
 
-        # =========================================================
-        # CASE 1️⃣ : MAIN continuation logic
-        # =========================================================
+        # =====================================================
+        # 🔥 CASE 1: MAIN continuation on existing assignment
+        # =====================================================
         if existing_assignment and pcb_type in ("HEXA-MAIN", "OCTA-MAIN"):
 
-            existing_logs = db.execute(
-                select(PCBProcessLog)
-                .where(PCBProcessLog.assignment_id == existing_assignment.assignment_id)
-            ).scalars().all()
+            # Get all existing logs
+            existing_logs = db.query(PCBProcessLog).filter(
+                PCBProcessLog.assignment_id == existing_assignment.assignment_id
+            ).all()
 
             if not existing_logs:
                 continue
 
             existing_step_ids = {log.flow_step_id for log in existing_logs}
+
+            # Find last created step
             last_step_id = max(existing_step_ids)
 
+            # Find its index in master flow
             start_index = next(
                 (i for i, s in enumerate(flow) if s.flow_step_id == last_step_id),
                 None
             )
 
-            if start_index is not None and start_index + 1 < len(flow):
+            if start_index is None:
+                continue
 
-                for step in flow[start_index + 1:]:
+            # Insert remaining steps (after last_step_id)
+            inserted_steps = []
 
-                    # Prevent duplicate insertion
-                    if step.flow_step_id not in existing_step_ids:
-                        db.add(
-                            PCBProcessLog(
-                                assignment_id=existing_assignment.assignment_id,
-                                flow_step_id=step.flow_step_id,
-                                process_status="STAGED",
-                                assigned_operator_staff_no=None
-                            )
+            for index, step in enumerate(flow[start_index + 1:]):
+
+                # Prevent duplicate insertion
+                if step.flow_step_id not in existing_step_ids:
+
+                    status = "PENDING" if index == 0 else "STAGED"
+
+                    db.add(
+                        PCBProcessLog(
+                            assignment_id=existing_assignment.assignment_id,
+                            flow_step_id=step.flow_step_id,
+                            process_status=status,
+                            assigned_operator_staff_no=None
                         )
+                    )
+
+                    inserted_steps.append(step.flow_step_id)
+
+            # -------------------------------------------------
+            # 🔥 Reopen workflow properly
+            # -------------------------------------------------
+            if inserted_steps:
+                existing_assignment.overall_status = "IN_PROGRESS"
+                existing_assignment.current_step_id = inserted_steps[0]
 
                 assign_count += 1
 
             continue
 
-        # =========================================================
-        # CASE 2️⃣ : Already Assigned & Not MAIN → Skip
-        # =========================================================
-        if existing_assignment:
+        # =====================================================
+        # 🔹 CASE 2: Skip if active assignment already exists
+        # =====================================================
+        if existing_assignment and existing_assignment.overall_status != "COMPLETED":
             continue
 
-        # =========================================================
-        # CASE 3️⃣ : Fresh Assignment (CHILD or Default)
-        # =========================================================
+        # =====================================================
+        # 🔹 CASE 3: Fresh Assignment (CHILD or MAIN)
+        # =====================================================
         if pcb_type in ("HEXA-CHILD", "OCTA-CHILD"):
             starting_step_id = first_step_id
+
         elif pcb_type in ("HEXA-MAIN", "OCTA-MAIN"):
             starting_step_id = step_15_id or first_step_id
+
         else:
             starting_step_id = first_step_id
 
@@ -175,6 +189,7 @@ def supervisor_assign(
         )
 
         for index, step in enumerate(flow[start_index:]):
+
             db.add(
                 PCBProcessLog(
                     assignment_id=new_assignment.assignment_id,
@@ -186,9 +201,233 @@ def supervisor_assign(
 
         assign_count += 1
 
+    # =========================================================
+    # 5️⃣ Commit Transaction
+    # =========================================================
     db.commit()
 
     return {
         "assigned": assign_count,
         "message": "Assignment processed successfully"
     }
+
+
+
+
+
+
+
+
+
+
+
+
+from fastapi import HTTPException, Depends
+from sqlalchemy.orm import Session
+from datetime import datetime
+
+
+@app.post("/operator/updatestatus")
+def update_status(req: OperatorActionRequest, db: Session = Depends(init_db)):
+
+    # ---------------------------------------------------------
+    # 1️⃣ Validate Operator
+    # ---------------------------------------------------------
+    operator = normalize_staff(req.operator_staff_no)
+    profile = find_user_from_profiles(db, operator)
+
+    if not profile:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+    # ---------------------------------------------------------
+    # 2️⃣ Fetch Current PCB Process Log
+    # ---------------------------------------------------------
+    log = db.query(PCBProcessLog).filter(
+        PCBProcessLog.assignment_id == req.assignment_id,
+        PCBProcessLog.flow_step_id == req.current_step_id
+    ).first()
+
+    if not log:
+        raise HTTPException(status_code=404, detail="Task not found for this PCB")
+
+    # ---------------------------------------------------------
+    # 3️⃣ Validate Operator Eligibility
+    # ---------------------------------------------------------
+    allowed = db.query(OperatorStepMapping).filter(
+        OperatorStepMapping.flow_step_id == log.flow_step_id,
+        OperatorStepMapping.operator_staff_no == operator
+    ).first()
+
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Operator not allowed for this task")
+
+    # ---------------------------------------------------------
+    # 4️⃣ Fetch Assignment
+    # ---------------------------------------------------------
+    assignment = db.query(PCBAssignment).filter(
+        PCBAssignment.assignment_id == req.assignment_id
+    ).first()
+
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    # Prevent updates if already closed
+    if assignment.overall_status == "COMPLETED":
+        raise HTTPException(status_code=400, detail="PCB workflow already completed")
+
+    # ---------------------------------------------------------
+    # 5️⃣ Save / Update Operator Audit Log
+    # ---------------------------------------------------------
+    operator_details = db.query(OperatorStepMapping).filter(
+        OperatorStepMapping.operator_staff_no == operator
+    ).first()
+
+    ope_log = db.query(OperatorLog).filter(
+        OperatorLog.PCBserialNoPartNumber == req.PCBserialNoPartNumber,
+        OperatorLog.current_step_id == req.current_step_id
+    ).first()
+
+    if not ope_log:
+        operator_log = OperatorLog(
+            PCBserialNoPartNumber=req.PCBserialNoPartNumber,
+            current_step_id=req.current_step_id,
+            assignment_id=req.assignment_id,
+            Task_Status=req.Task_Status,
+            Task_Name=req.Task_Name,
+            operator_staff_no=operator,
+            log_Data=req.log_Data,
+            operator_name=operator_details.operator_name,
+            operator_initial=operator_details.operator_initial,
+            operator_MRL=operator_details.operator_MRL,
+            operator_MRL_Expiry=operator_details.operator_MRL_Expiry,
+            userID=req.userID,
+            userName=req.userName,
+            userRole=req.userRole,
+            userSBU=req.userSBU,
+            userSBUDiv=req.userSBUDiv,
+            start_time=req.start_time,
+            end_time=req.end_time
+        )
+        db.add(operator_log)
+    else:
+        ope_log.Task_Status = req.Task_Status
+        ope_log.log_Data = req.log_Data
+        ope_log.end_time = req.end_time
+
+    # ---------------------------------------------------------
+    # 6️⃣ Action Handling
+    # ---------------------------------------------------------
+    action = req.Task_Status.upper()
+
+    # ============================
+    # START
+    # ============================
+    if action == "STARTED":
+
+        if log.process_status not in ("PENDING", "PAUSED"):
+            raise HTTPException(
+                status_code=400,
+                detail="Step not ready to start"
+            )
+
+        if log.process_status == "STARTED":
+            raise HTTPException(
+                status_code=400,
+                detail="Step already started"
+            )
+
+        log.start_time = datetime.utcnow()
+        log.process_status = "STARTED"
+        log.assigned_operator_staff_no = operator
+        assignment.current_step_id = log.flow_step_id
+
+    # ============================
+    # PAUSE
+    # ============================
+    elif action == "PAUSE":
+
+        if log.process_status != "STARTED":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot pause a step that is not started"
+            )
+
+        log.process_status = "PAUSED"
+
+    # ============================
+    # COMPLETE
+    # ============================
+    elif action == "COMPLETED":
+
+        if log.process_status not in ("STARTED", "PAUSED"):
+            raise HTTPException(
+                status_code=400,
+                detail="Step must be started before completing"
+            )
+
+        log.end_time = datetime.utcnow()
+        log.process_status = "COMPLETED"
+
+        # Get master flow step
+        step = db.get(ProcessFlowMaster, log.flow_step_id)
+
+        if not step:
+            raise HTTPException(
+                status_code=500,
+                detail="Process flow configuration error"
+            )
+
+        # 🔥 IMPORTANT FIX:
+        # Check if NEXT PCBProcessLog exists in this assignment
+        next_log = None
+
+        if step.next_step_id:
+            next_log = db.query(PCBProcessLog).filter(
+                PCBProcessLog.assignment_id == log.assignment_id,
+                PCBProcessLog.flow_step_id == step.next_step_id
+            ).first()
+
+        # ------------------------------------------
+        # If NO next_log exists → CLOSE PCB
+        # (CHILD scenario restriction)
+        # ------------------------------------------
+        if not next_log:
+            assignment.overall_status = "COMPLETED"
+            assignment.current_step_id = None
+            db.commit()
+
+            return {
+                "message": "Final stage completed. PCB restricted.",
+                "current_step_id": None,
+                "pcb": req.PCBserialNoPartNumber
+            }
+
+        # ------------------------------------------
+        # Otherwise → Activate Next Step (MAIN case)
+        # ------------------------------------------
+        if next_log.process_status == "STAGED":
+            next_log.process_status = "PENDING"
+
+        assignment.current_step_id = step.next_step_id
+
+    else:
+        raise HTTPException(status_code=400, detail="Invalid Task_Status")
+
+    # ---------------------------------------------------------
+    # 7️⃣ Commit Changes
+    # ---------------------------------------------------------
+    db.commit()
+
+    return {
+        "message": "Status updated successfully",
+        "current_step_id": assignment.current_step_id,
+        "pcb": req.PCBserialNoPartNumber
+    }
+
+
+
+
+
+
+
+
