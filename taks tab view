@@ -1,0 +1,215 @@
+const TaskTabsView = ({ currentUser, tableData = [], AllData = [], onOpenForm, onTriggerRefresh }) => {
+  const [activeTab, setActiveTab] = useState(0);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+
+  // --- EXACT LOGIC FROM ORIGINAL ---
+  const groupedTasks = useMemo(() => {
+    const groups = {};
+    if (tableData && tableData.length > 0) {
+      tableData.forEach((task) => {
+        const id = task.flowStepId;
+        if (!groups[id]) {
+          groups[id] = { processName: task.processName || `Step ${id}`, items: [], count: 0, hasStarted: false };
+        }
+        AllData.forEach((tabcount) => {
+          if (task.flowStepId === tabcount.currentStepId) {
+            groups[id].count++;
+            // Logic for Yellow Chip: Check if any PCB in this stage is "STARTED"
+            const activeTask = tabcount.tasks?.find(t => t.flowStepId === tabcount.currentStepId);
+            const status = activeTask?.status || "";
+            if (["STARTED", "Start", "In Progress"].includes(status)) {
+              groups[id].hasStarted = true;
+            }
+          }
+        });
+        groups[id].items.push(task);
+      });
+    }
+    return groups;
+  }, [tableData, AllData]);
+
+  const stepIds = Object.keys(groupedTasks).sort((a, b) => parseInt(a) - parseInt(b));
+  
+  // Symmetrical Split Logic
+  const midPoint = Math.ceil(stepIds.length / 2);
+  const leftSideIds = stepIds.slice(0, midPoint);
+  const rightSideIds = stepIds.slice(midPoint);
+
+  const activeStepId = stepIds[activeTab];
+  const FilteredData = AllData.filter(item => item.currentStepId == activeStepId);
+  const currentProcessName = groupedTasks[activeStepId]?.processName || "Process Stage";
+
+  // --- EXACT EVENT HANDLERS FROM ORIGINAL ---
+  const handleTabChange = (index) => {
+    setActiveTab(index);
+    setPage(0);
+  };
+
+  const handleStartClick = (row) => {
+    const formData = {
+      pcbSerial: row.serialNo,
+      flowStepId: row.flowStepId,
+      stageId: row.currentStepId - 1,
+      stageName: row.processName,
+      ...row,
+    };
+    if (onTriggerRefresh) onTriggerRefresh();
+    onOpenForm(formData, FilteredData, 'Start');
+  };
+
+  const handleCompleteClick = (row) => {
+    const formData = {
+      pcbSerial: row.serialNo,
+      flowStepId: row.flowStepId,
+      stageId: row.currentStepId - 1,
+      stageName: row.processName,
+      ...row
+    };
+    onOpenForm(formData, FilteredData, 'complete');
+  };
+
+  // UI Helpers
+  const getChipColor = (group) => {
+    if (group.hasStarted) return "#ed6c02"; // Yellow
+    if (group.count > 0) return "#d32f2f";  // Red
+    return "#2e7d32";                       // Green
+  };
+
+  const renderTabButton = (id) => {
+    const index = stepIds.indexOf(id);
+    const isActive = activeTab === index;
+    const group = groupedTasks[id];
+    return (
+      <Box
+        key={id}
+        onClick={() => handleTabChange(index)}
+        sx={{
+          p: 1, mb: 0.8, cursor: 'pointer', borderRadius: 1.5,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          border: '1px solid', borderColor: isActive ? UI_THEME.primary : '#e2e8f0',
+          bgcolor: isActive ? '#f0f7ff' : '#ffffff',
+          '&:hover': { borderColor: UI_THEME.primary, bgcolor: '#f8fafc' }
+        }}
+      >
+        <Typography sx={{ fontWeight: isActive ? 700 : 500, color: isActive ? UI_THEME.primary : '#475569', fontSize: '0.62rem', textTransform: 'uppercase', maxWidth: '82%' }}>
+          {group.processName}
+        </Typography>
+        <Chip label={group.count} size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: getChipColor(group), color: 'white', fontWeight: 'bold' }} />
+      </Box>
+    );
+  };
+
+  if (stepIds.length === 0) return null;
+
+  return (
+    <Box sx={{ width: '100%', mt: -1 }}>
+      {/* Centered Compact Title & Legend */}
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', mb: 2, position: 'relative' }}>
+        <Box sx={{ textAlign: 'center' }}>
+          <Typography variant="h6" sx={{ fontWeight: 800, color: '#1e293b' }}>{currentProcessName.toUpperCase()}</Typography>
+          <Typography variant="caption" color="text.secondary">Currently processing {FilteredData.length} units</Typography>
+        </Box>
+
+        <Stack direction="row" spacing={1.5} sx={{ position: 'absolute', right: 0, bgcolor: '#f8fafc', p: 1, borderRadius: 2, border: '1px solid #e2e8f0' }}>
+          {[['#d32f2f', 'Queued'], ['#ed6c02', 'Started'], ['#2e7d32', 'Empty']].map(([color, label]) => (
+            <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: color }} />
+              <Typography sx={{ fontSize: '0.55rem', fontWeight: 700 }}>{label}</Typography>
+            </Box>
+          ))}
+        </Stack>
+      </Box>
+
+      <Grid container spacing={1}>
+        {/* Left Tabs (Red marked area) */}
+        <Grid item xs={12} md={2.8}>
+          <Box sx={{ display: 'flex', flexDirection: 'column' }}>{leftSideIds.map(id => renderTabButton(id))}</Box>
+        </Grid>
+
+        {/* Center Table (Red marked area) */}
+        <Grid item xs={12} md={6.4}>
+          <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: "1px solid #e2e8f0" }}>
+            <Table stickyHeader size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={{ bgcolor: '#f8f9fa', fontWeight: 'bold', fontSize: '0.7rem' }}>SNO</TableCell>
+                  <TableCell sx={{ bgcolor: '#f8f9fa', fontWeight: 'bold', fontSize: '0.7rem' }}>PCB Serial</TableCell>
+                  <TableCell sx={{ bgcolor: '#f8f9fa', fontWeight: 'bold', fontSize: '0.7rem' }}>Status</TableCell>
+                  <TableCell align="right" sx={{ bgcolor: '#f8f9fa', fontWeight: 'bold', fontSize: '0.7rem' }}>Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {FilteredData.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage).map((row, index) => {
+                  const activeTask = row.tasks?.find(t => t.flowStepId === row.currentStepId);
+                  const status = activeTask?.status || "";
+                  const isDone = status === "Completed";
+                  const isStarted = ["STARTED", "Start", "In Progress"].includes(status);
+                  const isLocked = row.canExecute === true;
+                  const canComplete = isStarted && !isDone && !isLocked;
+                  const logLength = activeTask?.operator_Json_log ? Object.keys(activeTask.operator_Json_log).length : 0;
+                  const isLogFilled = logLength > 0;
+
+                  return (
+                    <TableRow key={index} hover>
+                      <TableCell sx={{ fontSize: '0.7rem' }}>{(page * rowsPerPage) + index + 1}</TableCell>
+                      <TableCell sx={{ fontWeight: 700, fontSize: '0.7rem' }}>{row.serialNo}</TableCell>
+                      <TableCell>
+                        <Chip 
+                          label={status || "Pending"} 
+                          size="small" 
+                          sx={{ 
+                            height: 18, fontSize: '0.55rem',
+                            bgcolor: isDone ? '#dcfce7' : isStarted ? '#fef3c7' : '#f1f5f9',
+                            color: isDone ? '#166534' : isStarted ? '#b45309' : '#475569',
+                          }} 
+                        />
+                      </TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                          <Button
+                            variant={isStarted ? "text" : "contained"}
+                            size="small"
+                            sx={{ fontSize: '0.6rem' }}
+                            disabled={isLogFilled || isLocked || isDone}
+                            onClick={() => handleStartClick(row)}
+                          >
+                            {isStarted ? "Started" : "Start"}
+                          </Button>
+                          <Button
+                            variant={isDone ? "outlined" : "contained"}
+                            color={isDone ? "inherit" : "success"}
+                            size="small"
+                            sx={{ fontSize: '0.6rem' }}
+                            disabled={!canComplete && !isDone}
+                            onClick={() => handleCompleteClick(row)}
+                          >
+                            {isDone ? "Log" : "Execute"}
+                          </Button>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+            <TablePagination
+              rowsPerPageOptions={[10]}
+              component="div"
+              count={FilteredData.length}
+              rowsPerPage={rowsPerPage}
+              page={page}
+              onPageChange={(e, p) => setPage(p)}
+              sx={{ '.MuiTablePagination-toolbar': { minHeight: 35 }, fontSize: '0.65rem' }}
+            />
+          </TableContainer>
+        </Grid>
+
+        {/* Right Tabs (Red marked area) */}
+        <Grid item xs={12} md={2.8}>
+          <Box sx={{ display: 'flex', flexDirection: 'column' }}>{rightSideIds.map(id => renderTabButton(id))}</Box>
+        </Grid>
+      </Grid>
+    </Box>
+  );
+};
