@@ -2,50 +2,9 @@ const TaskTabsView = ({ currentUser, tableData = [], AllData = [], onOpenForm, o
   const [activeTab, setActiveTab] = useState(0);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [searchTerm, setSearchTerm] = useState("");
 
-  // --- EXACT LOGIC FROM ORIGINAL ---
-  const groupedTasks = useMemo(() => {
-    const groups = {};
-    if (tableData && tableData.length > 0) {
-      tableData.forEach((task) => {
-        const id = task.flowStepId;
-        if (!groups[id]) {
-          groups[id] = { processName: task.processName || `Step ${id}`, items: [], count: 0, hasStarted: false };
-        }
-        AllData.forEach((tabcount) => {
-          if (task.flowStepId === tabcount.currentStepId) {
-            groups[id].count++;
-            // Logic for Yellow Chip: Check if any PCB in this stage is "STARTED"
-            const activeTask = tabcount.tasks?.find(t => t.flowStepId === tabcount.currentStepId);
-            const status = activeTask?.status || "";
-            if (["STARTED", "Start", "In Progress"].includes(status)) {
-              groups[id].hasStarted = true;
-            }
-          }
-        });
-        groups[id].items.push(task);
-      });
-    }
-    return groups;
-  }, [tableData, AllData]);
-
-  const stepIds = Object.keys(groupedTasks).sort((a, b) => parseInt(a) - parseInt(b));
-  
-  // Symmetrical Split Logic
-  const midPoint = Math.ceil(stepIds.length / 2);
-  const leftSideIds = stepIds.slice(0, midPoint);
-  const rightSideIds = stepIds.slice(midPoint);
-
-  const activeStepId = stepIds[activeTab];
-  const FilteredData = AllData.filter(item => item.currentStepId == activeStepId);
-  const currentProcessName = groupedTasks[activeStepId]?.processName || "Process Stage";
-
-  // --- EXACT EVENT HANDLERS FROM ORIGINAL ---
-  const handleTabChange = (index) => {
-    setActiveTab(index);
-    setPage(0);
-  };
-
+  // --- Logic for Handlers (Fixed Scope) ---
   const handleStartClick = (row) => {
     const formData = {
       pcbSerial: row.serialNo,
@@ -55,7 +14,7 @@ const TaskTabsView = ({ currentUser, tableData = [], AllData = [], onOpenForm, o
       ...row,
     };
     if (onTriggerRefresh) onTriggerRefresh();
-    onOpenForm(formData, FilteredData, 'Start');
+    onOpenForm(formData, AllData.filter(item => item.currentStepId == row.currentStepId), 'Start');
   };
 
   const handleCompleteClick = (row) => {
@@ -66,14 +25,52 @@ const TaskTabsView = ({ currentUser, tableData = [], AllData = [], onOpenForm, o
       stageName: row.processName,
       ...row
     };
-    onOpenForm(formData, FilteredData, 'complete');
+    onOpenForm(formData, AllData.filter(item => item.currentStepId == row.currentStepId), 'complete');
   };
 
-  // UI Helpers
+  const groupedTasks = useMemo(() => {
+    const groups = {};
+    if (tableData && tableData.length > 0) {
+      tableData.forEach((task) => {
+        const id = task.flowStepId;
+        if (!groups[id]) {
+          groups[id] = { processName: task.processName || `Step ${id}`, count: 0, hasStarted: false };
+        }
+        AllData.forEach((tabcount) => {
+          if (task.flowStepId === tabcount.currentStepId) {
+            groups[id].count++;
+            const activeTask = tabcount.tasks?.find(t => t.flowStepId === tabcount.currentStepId);
+            if (["STARTED", "Start", "In Progress"].includes(activeTask?.status)) {
+              groups[id].hasStarted = true;
+            }
+          }
+        });
+      });
+    }
+    return groups;
+  }, [tableData, AllData]);
+
+  const stepIds = Object.keys(groupedTasks).sort((a, b) => parseInt(a) - parseInt(b));
+  
+  // Layout Logic: Split to right side only if more than 10 tabs exist
+  const MAX_LEFT = 10;
+  const leftSideIds = stepIds.slice(0, MAX_LEFT);
+  const rightSideIds = stepIds.length > MAX_LEFT ? stepIds.slice(MAX_LEFT) : [];
+
+  const activeStepId = stepIds[activeTab];
+  
+  const FilteredData = useMemo(() => {
+    return AllData.filter(item => {
+      const matchesStage = item.currentStepId == activeStepId;
+      const matchesSearch = item.serialNo?.toLowerCase().includes(searchTerm.toLowerCase());
+      return matchesStage && matchesSearch;
+    });
+  }, [AllData, activeStepId, searchTerm]);
+
   const getChipColor = (group) => {
-    if (group.hasStarted) return "#ed6c02"; // Yellow
-    if (group.count > 0) return "#d32f2f";  // Red
-    return "#2e7d32";                       // Green
+    if (group.hasStarted) return "#ed6c02"; 
+    if (group.count > 0) return "#d32f2f";  
+    return "#2e7d32";                       
   };
 
   const renderTabButton = (id) => {
@@ -81,62 +78,95 @@ const TaskTabsView = ({ currentUser, tableData = [], AllData = [], onOpenForm, o
     const isActive = activeTab === index;
     const group = groupedTasks[id];
     return (
-      <Box
+      <Card
         key={id}
-        onClick={() => handleTabChange(index)}
+        onClick={() => { setActiveTab(index); setPage(0); setSearchTerm(""); }}
+        elevation={0}
         sx={{
-          p: 1, mb: 0.8, cursor: 'pointer', borderRadius: 1.5,
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          border: '1px solid', borderColor: isActive ? UI_THEME.primary : '#e2e8f0',
+          p: 1.5, mb: 1, cursor: 'pointer', borderRadius: 2,
+          border: '1px solid',
+          borderColor: isActive ? UI_THEME.primary : '#e2e8f0',
           bgcolor: isActive ? '#f0f7ff' : '#ffffff',
-          '&:hover': { borderColor: UI_THEME.primary, bgcolor: '#f8fafc' }
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          transition: 'all 0.2s ease',
+          "&:hover": { borderColor: UI_THEME.primary, bgcolor: '#f8fafc' }
         }}
       >
-        <Typography sx={{ fontWeight: isActive ? 700 : 500, color: isActive ? UI_THEME.primary : '#475569', fontSize: '0.62rem', textTransform: 'uppercase', maxWidth: '82%' }}>
-          {group.processName}
+        <Typography sx={{ 
+          fontWeight: isActive ? 700 : 500, 
+          fontSize: '0.75rem', 
+          color: isActive ? UI_THEME.primary : '#475569',
+          whiteSpace: 'normal', // Allows text to wrap instead of "..."
+          wordBreak: 'break-word',
+          lineHeight: 1.2,
+          pr: 1
+        }}>
+          {group.processName.toUpperCase()}
         </Typography>
-        <Chip label={group.count} size="small" sx={{ height: 18, fontSize: '0.65rem', bgcolor: getChipColor(group), color: 'white', fontWeight: 'bold' }} />
-      </Box>
+        <Chip label={group.count} size="small" sx={{ height: 20, fontSize: '0.7rem', bgcolor: getChipColor(group), color: 'white', fontWeight: 'bold' }} />
+      </Card>
     );
   };
 
   if (stepIds.length === 0) return null;
 
   return (
-    <Box sx={{ width: '100%', mt: -1 }}>
-      {/* Centered Compact Title & Legend */}
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', mb: 2, position: 'relative' }}>
-        <Box sx={{ textAlign: 'center' }}>
-          <Typography variant="h6" sx={{ fontWeight: 800, color: '#1e293b' }}>{currentProcessName.toUpperCase()}</Typography>
-          <Typography variant="caption" color="text.secondary">Currently processing {FilteredData.length} units</Typography>
+    <Box sx={{ width: '100%' }}>
+      {/* Centered Title Section */}
+      <Box sx={{ textAlign: 'center', mb: 4 }}>
+        <Typography variant="h4" sx={{ fontWeight: 900, color: '#1e293b', letterSpacing: -0.5 }}>
+          {groupedTasks[activeStepId]?.processName.toUpperCase()}
+        </Typography>
+        <Box sx={{ mt: 1, display: 'flex', justifyContent: 'center', gap: 2 }}>
+            <Typography variant="body2" color="text.secondary">
+                Total Units: <b>{FilteredData.length}</b>
+            </Typography>
+            <Divider orientation="vertical" flexItem />
+            <Stack direction="row" spacing={1.5} alignItems="center">
+                {[['#d32f2f', 'Queued'], ['#ed6c02', 'Started'], ['#2e7d32', 'Clear']].map(([color, label]) => (
+                    <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                        <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: color }} />
+                        <Typography sx={{ fontSize: '0.65rem', fontWeight: 700 }}>{label}</Typography>
+                    </Box>
+                ))}
+            </Stack>
         </Box>
-
-        <Stack direction="row" spacing={1.5} sx={{ position: 'absolute', right: 0, bgcolor: '#f8fafc', p: 1, borderRadius: 2, border: '1px solid #e2e8f0' }}>
-          {[['#d32f2f', 'Queued'], ['#ed6c02', 'Started'], ['#2e7d32', 'Empty']].map(([color, label]) => (
-            <Box key={label} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: color }} />
-              <Typography sx={{ fontSize: '0.55rem', fontWeight: 700 }}>{label}</Typography>
-            </Box>
-          ))}
-        </Stack>
       </Box>
 
-      <Grid container spacing={1}>
-        {/* Left Tabs (Red marked area) */}
-        <Grid item xs={12} md={2.8}>
-          <Box sx={{ display: 'flex', flexDirection: 'column' }}>{leftSideIds.map(id => renderTabButton(id))}</Box>
+      {/* Modern Search Bar */}
+      <Box sx={{ display: 'flex', justifyContent: 'center', mb: 4 }}>
+        <Paper
+          elevation={0}
+          sx={{
+            p: '4px 12px', display: 'flex', alignItems: 'center', width: 450,
+            border: '2px solid #e2e8f0', borderRadius: '12px',
+            bgcolor: '#ffffff', '&:focus-within': { borderColor: UI_THEME.primary, boxShadow: '0 4px 12px rgba(79, 70, 229, 0.08)' }
+          }}
+        >
+          <VisibilityIcon sx={{ color: '#94a3b8', mr: 1 }} />
+          <input
+            style={{ border: 'none', outline: 'none', width: '100%', padding: '10px', fontSize: '1rem', fontWeight: '500' }}
+            placeholder="Enter Serial Number to filter..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </Paper>
+      </Box>
+
+      <Grid container spacing={2}>
+        <Grid item xs={12} md={2.5}>
+          <Box sx={{ maxHeight: '70vh', overflowY: 'auto', pr: 0.5 }}>{leftSideIds.map(id => renderTabButton(id))}</Box>
         </Grid>
 
-        {/* Center Table (Red marked area) */}
-        <Grid item xs={12} md={6.4}>
-          <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2, border: "1px solid #e2e8f0" }}>
+        <Grid item xs={12} md={rightSideIds.length > 0 ? 7 : 9.5}>
+          <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 3, border: "1px solid #e2e8f0", boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
             <Table stickyHeader size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell sx={{ bgcolor: '#f8f9fa', fontWeight: 'bold', fontSize: '0.7rem' }}>SNO</TableCell>
-                  <TableCell sx={{ bgcolor: '#f8f9fa', fontWeight: 'bold', fontSize: '0.7rem' }}>PCB Serial</TableCell>
-                  <TableCell sx={{ bgcolor: '#f8f9fa', fontWeight: 'bold', fontSize: '0.7rem' }}>Status</TableCell>
-                  <TableCell align="right" sx={{ bgcolor: '#f8f9fa', fontWeight: 'bold', fontSize: '0.7rem' }}>Actions</TableCell>
+                  <TableCell sx={{ bgcolor: '#f8fafc', fontWeight: '800', fontSize: '0.85rem' }}>SNO</TableCell>
+                  <TableCell sx={{ bgcolor: '#f8fafc', fontWeight: '800', fontSize: '0.85rem' }}>PCB SERIAL</TableCell>
+                  <TableCell sx={{ bgcolor: '#f8fafc', fontWeight: '800', fontSize: '0.85rem' }}>STATUS</TableCell>
+                  <TableCell align="right" sx={{ bgcolor: '#f8fafc', fontWeight: '800', fontSize: '0.85rem' }}>ACTIONS</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -151,40 +181,40 @@ const TaskTabsView = ({ currentUser, tableData = [], AllData = [], onOpenForm, o
                   const isLogFilled = logLength > 0;
 
                   return (
-                    <TableRow key={index} hover>
-                      <TableCell sx={{ fontSize: '0.7rem' }}>{(page * rowsPerPage) + index + 1}</TableCell>
-                      <TableCell sx={{ fontWeight: 700, fontSize: '0.7rem' }}>{row.serialNo}</TableCell>
+                    <TableRow key={index} hover sx={{ '&:last-child td, &:last-child th': { border: 0 } }}>
+                      <TableCell sx={{ fontWeight: 600, color: '#64748b' }}>{(page * rowsPerPage) + index + 1}</TableCell>
+                      <TableCell sx={{ fontWeight: 800, color: '#1e293b', fontSize: '0.9rem' }}>{row.serialNo}</TableCell>
                       <TableCell>
                         <Chip 
                           label={status || "Pending"} 
                           size="small" 
                           sx={{ 
-                            height: 18, fontSize: '0.55rem',
+                            fontWeight: 700, height: 22, fontSize: '0.65rem',
                             bgcolor: isDone ? '#dcfce7' : isStarted ? '#fef3c7' : '#f1f5f9',
                             color: isDone ? '#166534' : isStarted ? '#b45309' : '#475569',
                           }} 
                         />
                       </TableCell>
                       <TableCell align="right">
-                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                          <Button
-                            variant={isStarted ? "text" : "contained"}
-                            size="small"
-                            sx={{ fontSize: '0.6rem' }}
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                          <Button 
+                            variant={isStarted ? "text" : "contained"} 
+                            size="small" 
+                            sx={{ fontWeight: 'bold', textTransform: 'none', borderRadius: 1.5 }}
                             disabled={isLogFilled || isLocked || isDone}
                             onClick={() => handleStartClick(row)}
                           >
                             {isStarted ? "Started" : "Start"}
                           </Button>
-                          <Button
-                            variant={isDone ? "outlined" : "contained"}
+                          <Button 
+                            variant={isDone ? "outlined" : "contained"} 
                             color={isDone ? "inherit" : "success"}
-                            size="small"
-                            sx={{ fontSize: '0.6rem' }}
+                            size="small" 
+                            sx={{ fontWeight: 'bold', textTransform: 'none', borderRadius: 1.5 }}
                             disabled={!canComplete && !isDone}
                             onClick={() => handleCompleteClick(row)}
                           >
-                            {isDone ? "Log" : "Execute"}
+                            {isDone ? "View Log" : "Execute"}
                           </Button>
                         </Stack>
                       </TableCell>
@@ -194,21 +224,22 @@ const TaskTabsView = ({ currentUser, tableData = [], AllData = [], onOpenForm, o
               </TableBody>
             </Table>
             <TablePagination
-              rowsPerPageOptions={[10]}
+              rowsPerPageOptions={[10, 25, 50]}
               component="div"
               count={FilteredData.length}
               rowsPerPage={rowsPerPage}
               page={page}
               onPageChange={(e, p) => setPage(p)}
-              sx={{ '.MuiTablePagination-toolbar': { minHeight: 35 }, fontSize: '0.65rem' }}
+              onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
             />
           </TableContainer>
         </Grid>
 
-        {/* Right Tabs (Red marked area) */}
-        <Grid item xs={12} md={2.8}>
-          <Box sx={{ display: 'flex', flexDirection: 'column' }}>{rightSideIds.map(id => renderTabButton(id))}</Box>
-        </Grid>
+        {rightSideIds.length > 0 && (
+          <Grid item xs={12} md={2.5}>
+            <Box sx={{ maxHeight: '70vh', overflowY: 'auto', pl: 0.5 }}>{rightSideIds.map(id => renderTabButton(id))}</Box>
+          </Grid>
+        )}
       </Grid>
     </Box>
   );
