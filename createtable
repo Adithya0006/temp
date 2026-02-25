@@ -1,0 +1,17 @@
+class StepEquipmentDetails(Base):
+    __tablename__ = "step_equipment_details"
+
+    # ✅ Same PK as ProcessFlowMaster
+    flow_step_id = Column(
+        Integer,
+        ForeignKey("process_flow_master.flow_step_id"),
+        primary_key=True
+    )
+
+    equipment_name = Column(String)
+    equipment_model = Column(String)
+    maintenance_cycle_days = Column(Integer)
+    remarks = Column(String)
+
+    # Optional relationship
+    step = relationship("ProcessFlowMaster", backref="equipment_details", uselist=False)
