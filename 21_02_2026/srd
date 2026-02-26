@@ -49,6 +49,73 @@ In the event of a phased rollout, the following requirements may be delayed to f
 * **Version 1.0 (Core):** Bulk upload, basic flow assignment, and operator task logging.
 * **Version 2.0 (Advanced):** Automated correction tickets (Maintenance Mode), advanced user permission management, and cross-department workload balancing.
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Based on the source code and architectural patterns identified in your project, here is the content for Section 3.0 of your **Software Requirements Description (SRD)**.
+
+---
+
+## 3.0 FUNCTIONALITY OF THE SOFTWARE ITEM
+
+### 3.1 CSCI REQUIREMENTS (Computer Software Configuration Item)
+
+The software is divided into specific configuration items that manage the lifecycle of a PCB from raw data ingestion to final production completion.
+
+#### 3.1.1 Functionality Requirements
+
+* **Data Normalization and Expansion:** The system shall parse Excel spreadsheets and automatically expand serial number ranges (e.g., "100-105") into individual unique records.
+* **Mass Upload with Progress Tracking:** The system shall support bulk data commits to the database using a batching strategy (50 records/batch) to maintain server stability during large-scale imports.
+* **Dynamic Workflow (Flow) Assignment:** The system shall allow supervisors to define a sequence of manufacturing stages and assign these "flows" to specific PCB batches.
+* **Role-Based Task Execution:** The operator interface shall present only the tasks assigned to the current user and allow for "Start" and "Complete" actions to track timing.
+* **Automated File Linking:** The software shall interface with a local file watcher to automatically detect and link machine-generated report files based on the PCB serial number.
+* **Real-Time Analytics Dashboard:** The system shall visualize production data using line charts for daily trends and horizontal bar charts for stage-wise performance metrics.
+* **PCB Traceability and Search:** The system shall provide a searchable database for supervisors to track the current stage, assigned operator, and status of any PCB in real-time.
+
+### 3.2 Physical Characteristics
+
+As a web-based software application, the "physical" characteristics refer to the deployment environment and the hardware interfaces it supports:
+
+* **Client-Side Hardware:** The system is optimized for standard desktop monitors and mobile tablets used on the shop floor.
+* **Local File System Interaction:** The software requires a physical connection (via local network) to the storage directories of assembly line machines to facilitate report uploads.
+* **Memory Management:** The application uses client-side pagination and "gap previewing" for large datasets to stay within the physical memory limits of standard browser environments.
+
+### 3.3 Environmental Conditions
+
+The system is designed to operate within an industrial manufacturing environment:
+
+* **Network Environment:** The system must operate within a Local Area Network (LAN) where the IP addresses for the Node.js and Python servers are configured and static.
+* **Software Dependency Environment:** * **Frontend:** Must be executed in a modern web browser (Chrome, Edge, or Firefox).
+* **Backend:** Depends on a dual-server environment: a Node.js runtime for history/uploads and a Python environment for analytics.
+
+
+* **Local Watcher Service:** A specific environmental requirement is the "Local Watcher" service running at `http://localhost:8082`, which acts as the gateway between the browser and the machine's local storage.
+
+---
+
+### Would you like me to proceed with Section 4.0, focusing on the **External Interface Requirements** (APIs and Database schemas)?
+
 ---
 
 **Would you like me to create the Section 3.0 (Specific Requirements) next, focusing on the Data Models or API Endpoints?**
