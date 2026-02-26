@@ -1,0 +1,768 @@
+Good question Adithya 👍 (this is important for backend + DBMS fundamentals, and very useful for your resume projects).
+
+I’ll explain:
+
+1. ✅ What is Foreign Key (concept clearly)
+
+
+2. ✅ How to create tables with Foreign Keys in FastAPI (SQLAlchemy)
+
+
+3. ✅ Simple example (Student–Department)
+
+
+4. ✅ All types of joins with code + explanation
+
+
+
+We’ll use:
+
+FastAPI
+
+SQLAlchemy ORM
+
+SQLite (for simplicity)
+
+
+
+---
+
+1️⃣ What is a Foreign Key? (Concept)
+
+🔹 Primary Key (PK)
+
+A column that uniquely identifies each row in a table.
+
+Example:
+
+Department
+------------
+id (PK)
+name
+
+🔹 Foreign Key (FK)
+
+A column in one table that refers to the Primary Key of another table.
+
+It creates a relationship between tables.
+
+Example:
+
+Student
+------------
+id (PK)
+name
+department_id (FK → Department.id)
+
+👉 Meaning:
+
+One Department can have many Students
+
+Each Student belongs to one Department
+
+
+This is called One-to-Many relationship
+
+
+---
+
+2️⃣ Creating Tables with Foreign Keys in FastAPI
+
+Install packages
+
+pip install fastapi sqlalchemy uvicorn
+
+
+---
+
+📁 db.py (Database setup)
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+DATABASE_URL = "sqlite:///./test.db"
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
+
+
+---
+
+📁 models.py (Tables with Foreign Key)
+
+from sqlalchemy import Column, Integer, String, ForeignKey
+from sqlalchemy.orm import relationship
+from db import Base
+
+class Department(Base):
+    __tablename__ = "departments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True)
+
+    # Relationship
+    students = relationship("Student", back_populates="department")
+
+
+class Student(Base):
+    __tablename__ = "students"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    department_id = Column(Integer, ForeignKey("departments.id"))
+
+    # Relationship
+    department = relationship("Department", back_populates="students")
+
+
+---
+
+🔥 What is happening here?
+
+department_id = Column(Integer, ForeignKey("departments.id"))
+
+Means:
+
+> This column must match an existing id in departments table.
+
+
+
+
+---
+
+🔥 relationship()
+
+Used by SQLAlchemy ORM
+
+Helps access related data easily
+
+
+Example:
+
+student.department.name
+
+
+---
+
+📁 main.py
+
+from fastapi import FastAPI, Depends
+from sqlalchemy.orm import Session
+from db import SessionLocal, engine, Base
+import models
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@app.post("/departments/")
+def create_department(name: str, db: Session = Depends(get_db)):
+    dept = models.Department(name=name)
+    db.add(dept)
+    db.commit()
+    db.refresh(dept)
+    return dept
+
+
+@app.post("/students/")
+def create_student(name: str, department_id: int, db: Session = Depends(get_db)):
+    student = models.Student(name=name, department_id=department_id)
+    db.add(student)
+    db.commit()
+    db.refresh(student)
+    return student
+
+
+---
+
+3️⃣ JOINS in FastAPI (SQLAlchemy)
+
+Let’s understand joins clearly.
+
+We have:
+
+Department
+id | name
+
+Student
+id | name | department_id
+
+
+---
+
+🔹 1. INNER JOIN
+
+👉 Returns only matching records.
+
+@app.get("/inner-join/")
+def inner_join(db: Session = Depends(get_db)):
+    result = (
+        db.query(models.Student, models.Department)
+        .join(models.Department)
+        .all()
+    )
+    return result
+
+Meaning:
+
+Only students who have valid department
+
+
+SQL equivalent:
+
+SELECT *
+FROM students
+INNER JOIN departments
+ON students.department_id = departments.id;
+
+
+---
+
+🔹 2. LEFT JOIN (LEFT OUTER JOIN)
+
+👉 Returns all students, even if no department exists.
+
+@app.get("/left-join/")
+def left_join(db: Session = Depends(get_db)):
+    result = (
+        db.query(models.Student, models.Department)
+        .outerjoin(models.Department)
+        .all()
+    )
+    return result
+
+SQL equivalent:
+
+SELECT *
+FROM students
+LEFT JOIN departments
+ON students.department_id = departments.id;
+
+
+---
+
+🔹 3. RIGHT JOIN
+
+⚠ SQLite does not support RIGHT JOIN directly.
+
+But logically:
+
+SELECT *
+FROM students
+RIGHT JOIN departments
+ON students.department_id = departments.id;
+
+In SQLAlchemy (simulate):
+
+@app.get("/right-join/")
+def right_join(db: Session = Depends(get_db)):
+    result = (
+        db.query(models.Department, models.Student)
+        .outerjoin(models.Student)
+        .all()
+    )
+    return result
+
+👉 Here we reverse the order.
+
+
+---
+
+🔹 4. FULL OUTER JOIN
+
+Returns:
+
+All students
+
+All departments
+
+Match where possible
+
+
+SQLite doesn't support directly.
+
+In PostgreSQL:
+
+from sqlalchemy import select
+from sqlalchemy.sql import join
+
+j = join(models.Student, models.Department,
+         models.Student.department_id == models.Department.id,
+         full=True)
+
+
+---
+
+🔹 5. CROSS JOIN
+
+Every student with every department.
+
+@app.get("/cross-join/")
+def cross_join(db: Session = Depends(get_db)):
+    result = (
+        db.query(models.Student, models.Department)
+        .all()
+    )
+    return result
+
+Equivalent SQL:
+
+SELECT *
+FROM students
+CROSS JOIN departments;
+
+
+---
+
+🧠 Quick Summary of Joins
+
+Join Type	Returns
+
+INNER JOIN	Only matching rows
+LEFT JOIN	All left + matching right
+RIGHT JOIN	All right + matching left
+FULL JOIN	Everything
+CROSS JOIN	Cartesian product
+
+
+
+---
+
+🔥 Important for Interviews
+
+When interviewer asks:
+
+❓ What is difference between ForeignKey and relationship?
+
+Answer:
+
+ForeignKey → Database level constraint
+
+relationship → ORM level object linking
+
+
+
+---
+
+🔥 Real World Example
+
+E-commerce:
+
+User → Orders
+
+Order → OrderItems
+
+Product → Category
+
+
+All connected using Foreign Keys.
+
+
+---
+
+🚀 Since you're building backend systems
+
+For your resume-level projects (like SQL engine / system design):
+
+Next level concepts:
+
+One-to-Many
+
+Many-to-Many (using association table)
+
+Cascade delete
+
+Lazy vs Eager loading
+
+Indexing on foreign keys
+
+
+If you want, next I can teach:
+
+👉 Many-to-Many with association table
+👉 Cascade delete example
+👉 Production-ready structure (models, schemas, CRUD layer)
+👉 How joins affect performance internally
+
+Tell me what you want to go deep into 😄
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Super 👍 good that you told me clearly.
+
+Let’s forget FastAPI code for 5 minutes.
+
+First we understand with real records (actual data).
+Then I’ll connect it back to FastAPI.
+
+We’ll go very slowly.
+
+
+---
+
+🏫 Example: College Database
+
+We have 2 tables:
+
+🟢 Department Table
+
+id	name
+
+1	CSE
+2	ECE
+3	Mechanical
+
+
+
+---
+
+🔵 Student Table
+
+id	name	department_id
+
+1	Rahul	1
+2	Sneha	1
+3	Arjun	2
+4	Kiran	NULL
+
+
+
+---
+
+1️⃣ What is Primary Key?
+
+Primary key = unique identifier.
+
+In Department:
+
+id → Primary Key
+
+In Student:
+
+id → Primary Key
+
+No two rows can have same id.
+
+
+---
+
+2️⃣ What is Foreign Key?
+
+Look at this column:
+
+Student.department_id
+
+This refers to:
+
+Department.id
+
+So:
+
+Rahul → department_id = 1 → CSE
+
+Sneha → department_id = 1 → CSE
+
+Arjun → department_id = 2 → ECE
+
+Kiran → NULL → No department
+
+
+👉 That is called Foreign Key relationship
+
+It creates a connection between tables.
+
+
+---
+
+🎯 What Type of Relationship Is This?
+
+One Department → Many Students
+
+Example: CSE has:
+
+Rahul
+
+Sneha
+
+
+This is called:
+
+🔹 One-to-Many Relationship
+
+
+---
+
+3️⃣ Now Let’s Understand JOINS Using Real Data
+
+This is where confusion usually comes 😄
+So we’ll go one by one.
+
+
+---
+
+🔵 INNER JOIN
+
+👉 "Give me only students who have department"
+
+SQL:
+
+SELECT students.name, departments.name
+FROM students
+INNER JOIN departments
+ON students.department_id = departments.id;
+
+Result:
+
+student	department
+
+Rahul	CSE
+Sneha	CSE
+Arjun	ECE
+
+
+❌ Kiran is NOT included (because department_id = NULL)
+
+
+---
+
+🟢 LEFT JOIN
+
+👉 "Give me ALL students, even if department not found"
+
+SQL:
+
+SELECT students.name, departments.name
+FROM students
+LEFT JOIN departments
+ON students.department_id = departments.id;
+
+Result:
+
+student	department
+
+Rahul	CSE
+Sneha	CSE
+Arjun	ECE
+Kiran	NULL
+
+
+✔ Everyone from LEFT table (students)
+
+
+---
+
+🟡 RIGHT JOIN
+
+👉 "Give me ALL departments, even if no students"
+
+Imagine this data:
+
+Department table has:
+
+id	name
+
+1	CSE
+2	ECE
+3	Mechanical
+
+
+No student in Mechanical.
+
+RIGHT JOIN result:
+
+student	department
+
+Rahul	CSE
+Sneha	CSE
+Arjun	ECE
+NULL	Mechanical
+
+
+✔ All departments included
+
+
+---
+
+🔴 FULL OUTER JOIN
+
+👉 "Give me everything"
+
+All students
+
+All departments
+
+Match where possible
+
+
+If:
+
+One student has no department
+
+One department has no students
+
+
+Both will appear.
+
+
+---
+
+🟣 CROSS JOIN
+
+👉 "Combine everything with everything"
+
+If:
+
+4 students
+
+3 departments
+
+
+Result rows = 4 × 3 = 12 rows
+
+Every student with every department.
+
+This is rarely used normally.
+
+
+---
+
+🧠 Why Do We Need Foreign Key?
+
+Without foreign key:
+
+You could insert:
+
+id	name	department_id
+
+5	Ajay	999
+
+
+But department 999 doesn’t exist ❌
+
+Foreign key prevents that.
+
+It enforces data integrity.
+
+
+---
+
+🔥 Now Let’s Connect This to FastAPI (Simple)
+
+In SQLAlchemy model:
+
+department_id = Column(Integer, ForeignKey("departments.id"))
+
+This tells database:
+
+> This value must exist in departments table.
+
+
+
+And this:
+
+department = relationship("Department")
+
+Lets you do:
+
+student.department.name
+
+Instead of manually joining.
+
+
+---
+
+🎯 Big Picture Concept
+
+Think like this:
+
+Database tables = Excel sheets
+Foreign Key = One sheet referencing another sheet
+Join = Combining sheets to see full data
+
+
+---
+
+💡 Very Important Interview Concept
+
+Foreign Key = Constraint
+Join = Query Operation
+
+They are NOT same.
+
+Foreign Key → defines relationship
+Join → uses relationship to fetch data
+
+
+---
+
+🚀 Since you're strong in backend logic
+
+Let me ask you one thinking question:
+
+If we delete CSE department,
+what should happen to Rahul and Sneha?
+
+1. Delete them?
+
+
+2. Set department_id to NULL?
+
+
+3. Throw error?
+
+
+
+That concept is called CASCADE.
+
+If you want next, I’ll explain:
+
+Cascade delete clearly
+
+Many-to-Many with real records
+
+How joins work internally (execution plan)
+
+
+Tell me which one you want next 😄
