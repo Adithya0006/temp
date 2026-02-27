@@ -1,0 +1,297 @@
+Perfect 👍 got it.
+
+You already have dataserver.py with all endpoints, so you don’t want router/service separation.
+You want:
+
+Secure
+
+Clean
+
+Production-style
+
+Everything inside dataserver.py
+
+
+Let’s do it properly.
+
+
+---
+
+✅ Secure File Upload Inside dataserver.py
+
+
+---
+
+🔐 Step 1: Install dependency
+
+pip install python-multipart
+
+
+---
+
+🧠 dataserver.py (Secure Production Version)
+
+# dataserver.py
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import os
+import uuid
+
+app = FastAPI()
+
+# ==============================
+# 🔐 CORS Configuration
+# ==============================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # change in production
+    allow_credentials=True,
+    allow_methods=["POST"],
+    allow_headers=["*"],
+)
+
+# ==============================
+# 📁 Upload Configurations
+# ==============================
+UPLOAD_DIR = "uploads"
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
+
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# ==============================
+# 🔐 Secure File Upload Endpoint
+# ==============================
+
+@app.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    description: str = Form(...)
+):
+    """
+    Secure File Upload Endpoint
+    - Validates file type
+    - Validates file size
+    - Generates unique filename
+    - Prevents overwrite
+    """
+
+    # 1️⃣ Validate file extension
+    file_ext = os.path.splitext(file.filename)[1].lower()
+
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="File type not allowed"
+        )
+
+    # 2️⃣ Validate file size
+    file.file.seek(0, os.SEEK_END)
+    file_size = file.file.tell()
+    file.file.seek(0)
+
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail="File too large. Max 5MB allowed."
+        )
+
+    # 3️⃣ Generate unique filename (Prevents overwrite attack)
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+
+    # 4️⃣ Save file securely
+    with open(file_path, "wb") as buffer:
+        buffer.write(file.file.read())
+
+    return {
+        "message": "File uploaded successfully",
+        "filename": unique_filename,
+        "description": description
+    }
+
+
+---
+
+🔥 Why This Is Secure
+
+✔️ No original filename used
+✔️ Prevents overwrite
+✔️ Restricts file types
+✔️ Restricts file size
+✔️ CORS restricted
+✔️ Handles invalid input
+✔️ Uses HTTPException properly
+
+
+---
+
+⚛️ Frontend (React + Axios – Clean Version)
+
+
+---
+
+api.js
+
+import axios from "axios";
+
+const api = axios.create({
+  baseURL: "http://127.0.0.1:8000",
+});
+
+export default api;
+
+
+---
+
+FileUpload.jsx
+
+import React, { useState } from "react";
+import api from "./api";
+
+export default function FileUpload() {
+
+  const [file, setFile] = useState(null);
+  const [description, setDescription] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const MAX_SIZE = 5 * 1024 * 1024;
+
+  const handleFileChange = (e) => {
+    const selectedFile = e.target.files[0];
+
+    if (!selectedFile) return;
+
+    // Client-side validation
+    if (selectedFile.size > MAX_SIZE) {
+      alert("File too large (Max 5MB)");
+      return;
+    }
+
+    setFile(selectedFile);
+  };
+
+  const handleUpload = async () => {
+
+    if (!file || !description) {
+      alert("All fields required");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("description", description);
+
+    try {
+      setLoading(true);
+
+      const response = await api.post("/upload", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+
+      alert("Upload successful");
+      console.log(response.data);
+
+    } catch (error) {
+      if (error.response) {
+        alert(error.response.data.detail);
+      } else {
+        alert("Server error");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <input
+        type="text"
+        placeholder="Description"
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+      />
+
+      <br /><br />
+
+      <input type="file" onChange={handleFileChange} />
+
+      <br /><br />
+
+      <button onClick={handleUpload} disabled={loading}>
+        {loading ? "Uploading..." : "Upload"}
+      </button>
+    </div>
+  );
+}
+
+
+---
+
+🛡️ If You Want Even More Secure (Enterprise Level)
+
+Inside dataserver.py, you can:
+
+✅ Add Authentication
+
+from fastapi import Depends
+from auth import get_current_user
+
+@app.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    description: str = Form(...),
+    user=Depends(get_current_user)
+):
+
+
+---
+
+✅ Restrict file MIME type also
+
+if file.content_type not in ["image/jpeg", "image/png", "application/pdf"]:
+    raise HTTPException(status_code=400, detail="Invalid MIME type")
+
+
+---
+
+🧠 Important Interview Concept
+
+Why both frontend + backend validation?
+
+Because:
+
+Frontend validation → User experience
+
+Backend validation → Security (never trust client)
+
+
+
+---
+
+🎯 Final Flow
+
+React → FormData → Axios → FastAPI → Validate → Save → Return JSON
+
+
+---
+
+If you want next:
+
+Multiple file upload
+
+Upload progress bar
+
+Store file path in database
+
+Auto-delete old files
+
+Serve uploaded files back
+
+Secure intranet production deployment (since you deploy in intranet)
+
+
+Tell me which one 👌
