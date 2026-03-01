@@ -1,0 +1,50 @@
+
+@app.get("/timeline/unified")
+def unified_timeline(SerialNo: str, db: Session = Depends(init_db)):
+    if not SerialNo:
+        raise HTTPException(status_code=400, detail="SerialNo is required")
+
+    # 1. Fetch all PCB records (Child and Main) sharing this base serial number
+    pcb_records = db.query(PcbData).filter(PcbData.serialNo == SerialNo).all()
+    if not pcb_records:
+        raise HTTPException(status_code=404, detail="Serial Number not found")
+
+    # Extract the full primary keys (PCBserialNoPartNumber) for both records
+    all_full_ids = [p.PCBserialNoPartNumber for p in pcb_records]
+
+    # 2. Get Assignment details
+    # We take the most recent assignment date to represent the current state
+    assignment_details = db.query(PCBAssignment).filter(
+        PCBAssignment.assigned_pcb_id.in_(all_full_ids)
+    ).order_by(desc(PCBAssignment.assignment_date)).first()
+
+    # 3. Fetch all Operator Logs for both Child and Main
+    # Ordered by current_step_id to ensure Child steps (1-15) appear before Main steps (16+)
+    ope_logs = db.query(OperatorLog).filter(
+        OperatorLog.PCBserialNoPartNumber.in_(all_full_ids)
+    ).order_by(OperatorLog.current_step_id.asc()).all()
+
+    # 4. Calculate Durations as per original logic
+    durations = []
+    for log in ope_logs:
+        if log.start_time and log.end_time:
+            durations.append((log.end_time - log.start_time).total_seconds())
+        else:
+            durations.append(0)
+
+    # 5. Assemble the response in the exact structure of the original /timeline
+    # Using the first pcb_record for general header info
+    primary_pcb = pcb_records[0]
+
+    return {
+        "Serial_No": primary_pcb.serialNo,
+        "Part_Number": primary_pcb.partNumber,
+        "Production_Order": primary_pcb.productionOrder,
+        "Description": primary_pcb.description,
+        "Type": "Unified (Child + Main)", 
+        "New_Time": primary_pcb.createdAt,
+        "Inaction_time": primary_pcb.updatedAt,
+        "Assigned_time": assignment_details.assignment_date if assignment_details else None,
+        "ope_log_details": ope_logs,
+        "Durations": durations
+    }
