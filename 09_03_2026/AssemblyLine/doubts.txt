@@ -1,0 +1,4 @@
+1) production live :http://172.195.121.91:8000/supervisor/external/dashboard?staff_no=SECOM01 ( eligible operator list is not coming!)
+eligible op are in endpoint: http://172.195.121.91:8000/supervisor/view?staff_no=SICOM01
+
+2) production order button is not getting small!
