@@ -1,0 +1,149 @@
+Here is the updated code for both endpoints. These changes transition your logic from a global operator update to a **row-specific renewal**, ensuring that only the competency tied to the uploaded file is extended.
+
+### 1. Updated Request Schema
+
+We must update the Pydantic model to include `stage_id`. This allows the frontend to tell the backend exactly which process in the `operator_step_mapping` table needs the date extension.
+
+```python
+from pydantic import BaseModel
+
+class UpdateMRLDateRequest(BaseModel):
+    staff_no: str
+    stage_id: int  # The specific flow_step_id to be renewed
+    ope_exp: str   # Format: MMYY (e.g., "0328")
+
+```
+
+---
+
+### 2. The Renewal Endpoint (`PUT`)
+
+This endpoint now uses a composite filter (`operator_staff_no` + `flow_step_id`) to identify the unique row for renewal.
+
+```python
+@app.put("/updatemrldate")
+def update_mrl_date(payload: UpdateMRLDateRequest, db: Session = Depends(init_db)):
+    """
+    Updates the MRL expiry date for a specific operator and a specific stage.
+    This prevents accidental bulk-renewal of other certifications.
+    """
+    
+    # STEP A: Find the specific row matching the Operator AND the Stage
+    target_mapping = db.query(OperatorStepMapping).filter(
+        OperatorStepMapping.operator_staff_no == payload.staff_no,
+        OperatorStepMapping.flow_step_id == payload.stage_id
+    ).first()
+
+    # STEP B: Validation
+    if not target_mapping:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Record not found for Staff {payload.staff_no} at Stage {payload.stage_id}"
+        )
+
+    # STEP C: Update only this specific qualification
+    # Format MMYY (e.g., "0127" is January 2027)
+    target_mapping.operator_MRL_Expiry = payload.ope_exp
+
+    # STEP D: Finalize transaction
+    try:
+        db.commit()
+        return {
+            "status": "success", 
+            "message": f"MRL for Stage {payload.stage_id} successfully renewed to {payload.ope_exp}"
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+```
+
+---
+
+### 3. The File Upload Endpoint (`POST`)
+
+This endpoint is updated to accept the `stage_id`. It saves the PDF proof and logs the action specifically for that production stage.
+
+```python
+@app.post("/mrlrevalidationdocsupload")
+async def upload_file(
+    operatorid: str = Form(...), 
+    stage_id: int = Form(...),    # Identifying which stage this document belongs to
+    file: UploadFile = File(...),
+    db: Session = Depends(init_db)
+):
+    """
+    Uploads a PDF revalidation document and links it to a specific operator slot.
+    """
+    
+    # 1. Validation
+    if not operatorid or operatorid.lower() in ["null", "undefined"]:
+        raise HTTPException(status_code=400, detail="A valid Operator ID is required.")
+
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
+
+    # 2. Manage existing files for this operator
+    # Note: If you want to store documents per-stage, update filter to include stage_id
+    existing_doc = db.query(MRLRevalidationDocs).filter(
+        MRLRevalidationDocs.operatorid == operatorid
+    ).first()
+
+    action = "UPLOAD"
+
+    if existing_doc:
+        action = "REPLACE"
+        if existing_doc.file_path and os.path.exists(existing_doc.file_path):
+            try:
+                os.remove(existing_doc.file_path)
+            except OSError:
+                pass
+        db.delete(existing_doc)
+        db.commit()
+
+    # 3. Save the new PDF to local storage
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    safe_filename = f"{timestamp}_{file.filename.replace(' ', '_')}"
+    
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # 4. Save Metadata & Log for the specific renewal action
+    new_doc = MRLRevalidationDocs(
+        operatorid=operatorid,
+        filename=safe_filename,
+        original_filename=file.filename,
+        file_path=file_path
+    )
+    
+    log_entry = MRLRevalidationDocsLog(
+        action_type=action,
+        file_name=file.filename,
+        operatorid=operatorid 
+        # Optional: Add stage_id to your Log model if needed for history tracking
+    )
+    
+    db.add(new_doc)
+    db.add(log_entry)
+    db.commit()
+    db.refresh(new_doc)
+    
+    return {
+        "status": "success", 
+        "operatorid": operatorid, 
+        "stage_id": stage_id,
+        "document": new_doc.original_filename
+    }
+
+```
+
+### Behavior Summary
+
+* **Targeted Updates:** If you have 10 rows for "Operator Ravi," only the specific row matching the `stage_id` provided will be updated.
+* **Independence:** An operator can now have different expiry dates for different skills (e.g., Printer might expire in `0127` while AOI expires in `0628`).
+* **Safety:** If the `stage_id` does not match the `operatorid` in the database, the system will return a `404 Error` rather than incorrectly updating the wrong record.
+
+Would you like me to help you update the **React frontend** to pass this `stage_id` when the user clicks a specific cell in the matrix?
