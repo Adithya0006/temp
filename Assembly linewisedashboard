@@ -1,0 +1,257 @@
+import React, { useState, useEffect } from "react";
+import axios from "axios";
+import { Box, Grid, Paper, Typography, Stack } from "@mui/material";
+
+/*
+====================================================
+SMT ASSEMBLY LINE DASHBOARD COMPONENT
+----------------------------------------------------
+This file contains EVERYTHING in one component.
+
+Includes:
+1. Mock data for machines
+2. Axios provision for future backend
+3. Top production metrics
+4. Assembly line flow visualization
+5. Machine detail cards
+====================================================
+*/
+
+export default function SMTDashboard() {
+
+  /*
+  ==========================================
+  MOCK DATA
+  ------------------------------------------
+  Used for now until backend API is ready.
+  Later we will replace this with axios.get
+  ==========================================
+  */
+
+  const mockMachines = [
+    { id: 1, name: "Loader", status: "RUNNING", pcbs: 4520, alert: "NONE" },
+    { id: 2, name: "Printer", status: "RUNNING", pcbs: 4500, alert: "NONE" },
+    { id: 3, name: "SPI", status: "FAULT", pcbs: 4450, alert: "LOW_PASTE" },
+    { id: 4, name: "Pick & Place 1", status: "RUNNING", pcbs: 4320, alert: "NONE" },
+    { id: 5, name: "Pick & Place 2", status: "IDLE", pcbs: 4320, alert: "NONE" },
+    { id: 6, name: "Reflow Oven", status: "RUNNING", pcbs: 4100, alert: "NONE" },
+    { id: 7, name: "AOI", status: "FAULT", pcbs: 1245, alert: "COMPONENT_MISSING" },
+    { id: 8, name: "Manual Station", status: "SETUP", pcbs: 980, alert: "TOOL_CHANGE" },
+    { id: 9, name: "Packing", status: "RUNNING", pcbs: 1150, alert: "NONE" }
+  ];
+
+  /*
+  ==========================================
+  STATE
+  ==========================================
+  */
+
+  const [machines, setMachines] = useState(mockMachines);
+
+  /*
+  ==========================================
+  FUTURE BACKEND CONNECTION
+  ------------------------------------------
+  Replace mock data with real API later.
+  ==========================================
+  */
+
+  useEffect(() => {
+
+    // Uncomment this when backend API is ready
+
+    /*
+    axios.get("/api/smt/machines")
+      .then((res) => {
+        setMachines(res.data);
+      })
+      .catch((err) => {
+        console.error("API Error:", err);
+      });
+    */
+
+  }, []);
+
+  /*
+  ==========================================
+  STATUS COLOR HELPER
+  ------------------------------------------
+  Determines color based on machine state
+  ==========================================
+  */
+
+  const getColor = (status) => {
+    switch (status) {
+      case "RUNNING":
+        return "#2ecc71"; // green
+      case "FAULT":
+        return "#e74c3c"; // red
+      case "IDLE":
+        return "#f1c40f"; // yellow
+      case "SETUP":
+        return "#3498db"; // blue
+      default:
+        return "#95a5a6";
+    }
+  };
+
+  /*
+  ==========================================
+  MAIN UI
+  ==========================================
+  */
+
+  return (
+    <Box
+      sx={{
+        padding: 4,
+        background: "#0f172a",
+        minHeight: "100vh",
+        color: "white"
+      }}
+    >
+
+      {/* =====================================
+         HEADER
+      ====================================== */}
+
+      <Typography variant="h4" mb={3}>
+        SMT Assembly Line Monitoring
+      </Typography>
+
+      {/* =====================================
+         TOP METRICS
+      ====================================== */}
+
+      <Stack direction="row" spacing={3} mb={4}>
+
+        <Paper sx={{ padding: 2, background: "#1f2937", color: "white" }}>
+          Total Boards: 12,345
+        </Paper>
+
+        <Paper sx={{ padding: 2, background: "#1f2937", color: "white" }}>
+          Cycle Time: 32.5 sec
+        </Paper>
+
+        <Paper sx={{ padding: 2, background: "#1f2937", color: "white" }}>
+          Efficiency: 87%
+        </Paper>
+
+        <Paper sx={{ padding: 2, background: "#1f2937", color: "white" }}>
+          Defect: 15
+        </Paper>
+
+      </Stack>
+
+      {/* =====================================
+         ASSEMBLY LINE FLOW
+      ====================================== */}
+
+      <Stack
+        direction="row"
+        spacing={3}
+        alignItems="center"
+        mb={5}
+        sx={{ overflowX: "auto" }}
+      >
+
+        {machines.slice(0,7).map((machine, index) => (
+          <Stack key={machine.id} alignItems="center">
+
+            {/* machine box */}
+            <Paper
+              sx={{
+                padding: 2,
+                minWidth: 120,
+                background: "#1f2937",
+                textAlign: "center",
+                borderBottom: `4px solid ${getColor(machine.status)}`
+              }}
+            >
+
+              <Typography>{machine.name}</Typography>
+
+              <Typography
+                sx={{
+                  fontSize: 12,
+                  color: getColor(machine.status)
+                }}
+              >
+                {machine.status}
+              </Typography>
+
+            </Paper>
+
+            {/* arrow between machines */}
+            {index !== machines.length - 1 && (
+              <Typography sx={{ fontSize: 28 }}>
+                →
+              </Typography>
+            )}
+
+          </Stack>
+        ))}
+
+      </Stack>
+
+      {/* =====================================
+         MACHINE CARDS GRID
+      ====================================== */}
+
+      <Grid container spacing={3}>
+
+        {machines.map((machine) => (
+
+          <Grid item xs={12} md={4} lg={3} key={machine.id}>
+
+            <Paper
+              sx={{
+                padding: 3,
+                borderRadius: 3,
+                background: "#1f2937",
+                borderTop: `6px solid ${getColor(machine.status)}`
+              }}
+            >
+
+              {/* Machine Name */}
+              <Typography variant="h6">
+                {machine.name}
+              </Typography>
+
+              {/* Status */}
+              <Typography mt={1}>
+                Status:
+                <span
+                  style={{
+                    marginLeft: 6,
+                    color: getColor(machine.status)
+                  }}
+                >
+                  {machine.status}
+                </span>
+              </Typography>
+
+              {/* PCB Count */}
+              <Typography mt={1}>
+                PCBs: {machine.pcbs}
+              </Typography>
+
+              {/* Alert */}
+              <Typography mt={1} color="orange">
+                {machine.alert === "NONE"
+                  ? "No Alerts"
+                  : machine.alert.replace("_", " ")
+                }
+              </Typography>
+
+            </Paper>
+
+          </Grid>
+
+        ))}
+
+      </Grid>
+
+    </Box>
+  );
+}
