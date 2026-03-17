@@ -96,7 +96,57 @@ def complete_rework(pcb_serial: str, db: Session = Depends(init_db)):
 
 
 
-
+not changing nay operator/updaetstatus
+@app.post("/operator/raise-rework")
+def raise_rework(req: dict, db: Session = Depends(init_db)):
+    # 1. Capture the Operator Audit Log (Saving log_data)
+    # This ensures form values (temps, date codes) are saved even on rejection
+    operator_log = OperatorLog(
+        PCBserialNoPartNumber=req.get("pcb_serial"),
+        current_step_id=req.get("current_stage_id"),
+        assignment_id=req.get("assignment_id"),
+        Task_Status="REWORK_RAISED", # Custom status for tracking
+        log_Data=req.get("log_data"), # The form values from the frontend
+        operator_staff_no=req.get("operator_id"),
+        operator_name=req.get("operator_name"),
+        # Fill other user fields (SBU, Role, etc.) from req if needed
+        start_time=req.get("start_time"), 
+        end_time=datetime.utcnow()
+    )
+    db.add(operator_log)
+    
+    # 2. Create the tracking record (The "Bookmark")
+    new_track = ReworkTrack(
+        PCBserialNoPartNumber=req.get("pcb_serial"),
+        assignment_id=req.get("assignment_id"),
+        source_stage_id=req.get("current_stage_id"),
+        rework_stage_id=req.get("rworkstageid"),
+        remarks=req.get("remarks"),
+        is_resolved=False
+    )
+    db.add(new_track)
+    
+    # 3. Update the Assignment Routing
+    assignment_id = req.get("assignment_id")
+    assignment = db.query(PCBAssignment).filter(PCBAssignment.assignment_id == assignment_id).first()
+    
+    if assignment:
+        # Move the digital record to the Rework Station (Stage 99)
+        assignment.current_step_id = 99 
+        
+    # 4. Update the specific PCB Process Log status
+    current_stage = req.get("current_stage_id")
+    log = db.query(PCBProcessLog).filter(
+        PCBProcessLog.assignment_id == assignment_id,
+        PCBProcessLog.flow_step_id == current_stage
+    ).first()
+    
+    if log:
+        log.process_status = "REJECTED"
+        log.end_time = datetime.utcnow()
+        
+    db.commit()
+    return {"message": "Audit log saved and PCB redirected to rework", "rework_id": new_track.id}
 
 
 
