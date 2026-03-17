@@ -1,0 +1,138 @@
+
+@app.get("/rework/is-eligible/{stage_id}")
+def check_rework_eligibility(stage_id: int, db: Session = Depends(init_db)):
+    # Query the whitelist table to see if this stage is allowed to trigger rework
+    is_eligible = db.query(ReworkStages).filter(ReworkStages.stage_id == stage_id).first()
+    
+    # Return a simple boolean to the frontend to toggle the button visibility
+    return {"eligible": True if is_eligible else False}
+
+
+@app.post("/operator/raise-rework")
+def raise_rework(req: dict, db: Session = Depends(init_db)):
+    
+    # 1. Create the tracking record
+    # Using .get() is safer as it returns None if the key is missing
+    new_track = ReworkTrack(
+        PCBserialNoPartNumber=req.get("pcb_serial"),
+        assignment_id=req.get("assignment_id"),
+        source_stage_id=req.get("current_stage_id"),
+        rework_stage_id=req.get("rworkstageid"),
+        remarks=req.get("remarks"),
+        is_resolved=False
+    )
+    db.add(new_track)
+    
+    # 2. Update the Assignment
+    # FIX: Changed req.assignment_id to req.get("assignment_id")
+    assignment_id = req.get("assignment_id")
+    assignment = db.query(PCBAssignment).filter(PCBAssignment.assignment_id == assignment_id).first()
+    
+    if assignment:
+        assignment.current_step_id = req.get("current_stage_id")  # Redirect to Rework Station
+        
+    # 3. Update the specific task log
+    # FIX: Changed req.assignment_id and req.current_stage_id to .get() calls
+    current_stage = req.get("current_stage_id")
+    log = db.query(PCBProcessLog).filter(
+        PCBProcessLog.assignment_id == assignment_id,
+        PCBProcessLog.flow_step_id == current_stage
+    ).first()
+    
+    if log:
+        log.process_status = "REJECTED" 
+        
+    db.commit()
+    return {"message": "PCB sent to rework station", "rework_id": new_track.id}
+
+@app.get("/operator/rework-view")
+def get_rework_queue(db: Session = Depends(init_db)):
+    # Join ReworkTrack with PcbData to get a descriptive list for the operator
+    results = db.query(ReworkTrack, PcbData).join(
+        PcbData, ReworkTrack.PCBserialNoPartNumber == PcbData.PCBserialNoPartNumber
+    ).filter(ReworkTrack.is_resolved == False).all()
+    
+    # Format data so the UI shows the Serial Number, the Problem (remarks), and the Origin
+    return [{
+        "serial": pcb.serialNo,
+        "remarks": track.remarks,
+        "from_stage": track.source_stage_id,
+        "assignment_id": track.assignment_id
+    } for track, pcb in results]
+
+
+@app.post("/operator/complete-rework")
+def complete_rework(pcb_serial: str, db: Session = Depends(init_db)):
+    # 1. Find the active rework record for this PCB
+    track = db.query(ReworkTrack).filter(
+        ReworkTrack.PCBserialNoPartNumber == pcb_serial,
+        ReworkTrack.is_resolved == False
+    ).first()
+    
+    if not track:
+        raise HTTPException(status_code=404, detail="No active rework found")
+
+    # 2. Update Assignment to return the PCB to its original source stage
+    assignment = db.query(PCBAssignment).filter(PCBAssignment.assignment_id == track.assignment_id).first()
+    assignment.current_step_id = track.source_stage_id # Return to sender
+    
+    # 3. Reset the source stage status so the mainline operator can re-process it
+    log = db.query(PCBProcessLog).filter(
+        PCBProcessLog.assignment_id == track.assignment_id,
+        PCBProcessLog.flow_step_id == track.source_stage_id
+    ).first()
+    if log:
+        log.process_status = "PENDING" # Make it visible again in the original queue
+        log.start_time = None          # Clear previous timing data
+        
+    # 4. Mark the rework as resolved
+    track.is_resolved = True
+    track.resolved_at = datetime.utcnow()
+    
+    db.commit()
+    return {"message": "Rework completed. Unit returned to original stage."}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class ReworkStages(base):
+    __tablename__ = "rework_stages"
+    # Configuration table to whitelist stages that can trigger rework
+    id = Column(Integer, primary_key=True)
+    stage_id = Column(Integer, ForeignKey("process_flow_master.flow_step_id"))
+    stage_name = Column(String)
+
+class ReworkTrack(base):
+    __tablename__ = "rework_track"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # Traceability Links
+    PCBserialNoPartNumber = Column(String, ForeignKey("PcbData.PCBserialNoPartNumber"))
+    assignment_id = Column(Integer, ForeignKey("pcb_assignment.assignment_id"))
+    
+    # The "Bookmark" for the return journey
+    source_stage_id = Column(Integer) # The stage where defect was found
+    rework_stage_id = Column(Integer) # Usually a fixed ID for the "Rework Station"
+    
+    remarks = Column(String) # Defect description
+    is_resolved = Column(Boolean, default=False) # Your 'flag'
+    created_at = Column(DateTime, default=datetime.utcnow) # time
+    resolved_at = Column(DateTime, nullable=True)
+
+
+
+
+
+
