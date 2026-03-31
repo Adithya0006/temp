@@ -1,0 +1,279 @@
+
+class EquipmentCreate(BaseModel):
+    stage_id: int
+    eqpt_no: str
+    eqpt_name: str
+    eqpt_make: str
+    eqpt_model: str
+    eqpt_due_date: date
+
+# 2. Use this for GET (Read) - This includes the ID from the DB
+class EquipmentResponse(EquipmentCreate):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+
+
+# @app
+@app.get("/inventory/equipments", response_model=List[EquipmentSchema])
+def get_all_equipments(db: Session = Depends(init_db)):
+    # .order_by() sorts the results by stage_id numerically (1, 2, 3...)
+    items = db.query(Equipments).order_by(Equipments.stage_id.asc()).all()
+    return items
+
+@app.post("/inventory/equipments")
+def add_equipment(data: EquipmentCreate, db: Session = Depends(init_db)):
+    new_eq = Equipments(**data.model_dump()) # model_dump() replaces .dict() in Pydantic V2
+    db.add(new_eq)
+    db.commit()
+    db.refresh(new_eq)
+    return {"message": "Equipment added successfully", "id": new_eq.id}
+
+@app.put("/inventory/equipments/{eq_id}")
+def update_equipment(eq_id: int, data: EquipmentSchema, db: Session = Depends(init_db)):
+    eq = db.query(Equipments).filter(Equipments.id == eq_id).first()
+    if not eq:
+        raise HTTPException(status_code=404, detail="Equipment not found")
+    for key, value in data.dict().items():
+        setattr(eq, key, value)
+    db.commit()
+    return {"message": "Equipment updated"}
+
+# @app.delete("/inventory/equipments/{eq_id}")
+# def delete_equipment(eq_id: int, db: Session = Depends(init_db)):
+#     eq = db.query(Equipments).filter(Equipments.id == eq_id).first()
+#     if not eq:
+#         raise HTTPException(status_code=404, detail="Equipment not found")
+#     db.delete(eq)
+#     db.commit()
+#     return {"message": "Deleted successfully"}
+
+from sqlalchemy import and_
+
+@app.delete("/inventory/equipments/{stage_id}/{eqpt_no}")
+def delete_equipment(stage_id: int, eqpt_no: str, db: Session = Depends(init_db)):
+    # Filter by both parameters to ensure precision
+    eq = db.query(Equipments).filter(
+        and_(
+            Equipments.stage_id == stage_id,
+            Equipments.eqpt_no == eqpt_no
+        )
+    ).first()
+
+    if not eq:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Equipment {eqpt_no} not found at Stage {stage_id}"
+        )
+
+    db.delete(eq)
+    db.commit()
+    return {"message": f"Equipment {eqpt_no} deleted from Stage {stage_id} successfully"}
+
+# --- CONSUMABLES ENDPOINTS ---
+
+@app.get("/inventory/consumables", response_model=List[ConsumableSchema])
+def get_all_consumables(db: Session = Depends(init_db)):
+    # Sorting consumables so they align with the manufacturing flow
+    items = db.query(Consumables).order_by(Consumables.stage_id.asc()).all()
+    return items
+
+@app.post("/inventory/consumables")
+def add_consumable(data: ConsumableSchema, db: Session = Depends(init_db)):
+    new_con = Consumables(**data.dict())
+    db.add(new_con)
+    db.commit()
+    db.refresh(new_con)
+    return {"message": "Consumable added", "id": new_con.id}
+
+# @app.delete("/inventory/consumables/{con_id}")
+# def delete_consumable(con_id: int, db: Session = Depends(init_db)):
+#     con = db.query(Consumables).filter(Consumables.id == con_id).first()
+#     if not con:
+#         raise HTTPException(status_code=404, detail="Consumable not found")
+#     db.delete(con)
+#     db.commit()
+#     return {"message": "Deleted successfully"}
+
+@app.delete("/inventory/consumables/{stage_id}/{material_no}")
+def delete_consumable(stage_id: int, material_no: str, db: Session = Depends(init_db)):
+    # Filter by Stage and Material Number
+    con = db.query(Consumables).filter(
+        and_(
+            Consumables.stage_id == stage_id,
+            Consumables.consumable_material_number == material_no
+        )
+    ).first()
+
+    if not con:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Material {material_no} not found at Stage {stage_id}"
+        )
+
+    db.delete(con)
+    db.commit()
+    return {"message": f"Material {material_no} deleted successfully"}
+
+
+
+from pydantic import BaseModel, ConfigDict
+from datetime import date
+
+class EquipmentSchema(BaseModel):
+    # Enable ORM mode so it can read SQLAlchemy objects
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int  # Added this so the GET response includes the ID
+    stage_id: int
+    eqpt_no: str
+    eqpt_name: str
+    eqpt_make: str
+    eqpt_model: str
+    eqpt_due_date: date
+
+class ConsumableSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    stage_id: int
+    consumable_material_number: str
+    consumable_material_name: str
+    consumable_gr_number: str
+    consumable_year: date
+    consumable_shelf_life: date
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+To achieve this, you'll need to use MUI's `Dialog`, `DialogTitle`, `DialogContent`, and a `Table`. I'll also use `Intl.DateTimeFormat` to ensure the date is displayed in Indian Standard Time (IST) in a clean, readable format.
+
+Here is the updated code structure:
+
+### 1. The State Management
+First, add a state to track whether the dialog is open.
+
+```javascript
+const [openDialog, setOpenDialog] = React.useState(false);
+
+const handleOpen = () => setOpenDialog(true);
+const handleClose = () => setOpenDialog(false);
+
+// Helper to format date to IST
+const formatIST = (dateString) => {
+  return new Intl.DateTimeFormat('en-IN', {
+    day: '2-digit',
+    month: '2-short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Kolkata'
+  }).format(new Date(dateString));
+};
+```
+
+---
+
+### 2. The Modified Grid Item
+Add an `onClick` handler and a `cursor: "pointer"` style to the "OVERALL TASKS COMPLETED" card.
+
+```jsx
+<Grid container spacing={2} sx={{ mb: 2 }}>
+  {[
+    { 
+      label: "OVERALL TASKS COMPLETED", 
+      value: Productivity_History.length, 
+      icon: <CheckCircle size={20} color="#4f46e5" />, 
+      bg: "#eef2ff",
+      clickable: true // Add a flag to identify the clickable card
+    },
+    // ... other KPIs
+  ].map((kpi, idx) => (
+    <Grid item xs={4} key={idx}>
+      <Paper 
+        variant="outlined" 
+        onClick={kpi.clickable ? handleOpen : undefined} // Trigger dialog
+        sx={{ 
+          p: 1.5, 
+          borderRadius: 2, 
+          bgcolor: kpi.bg, 
+          borderColor: "transparent",
+          cursor: kpi.clickable ? "pointer" : "default", // Visual cue
+          '&:hover': kpi.clickable ? { opacity: 0.9, boxShadow: 1 } : {} 
+        }}
+      >
+        <Stack direction="row" spacing={1.5} alignItems="center">
+          {kpi.icon}
+          <Box>
+            <Typography sx={{ opacity: 0.8, fontWeight: 600, fontSize: '0.75rem' }}>{kpi.label}</Typography>
+            <Typography variant="h6" fontWeight="800" lineHeight={1.2}>{kpi.value}</Typography>
+          </Box>
+        </Stack>
+      </Paper>
+    </Grid>
+  ))}
+</Grid>
+```
+
+---
+
+### 3. The Dialog Component
+Add this at the bottom of your component (outside the Grid).
+
+```jsx
+<Dialog open={openDialog} onClose={handleClose} maxWidth="md" fullWidth>
+  <DialogTitle sx={{ fontWeight: 800 }}>Overall Completed PCBs</DialogTitle>
+  <DialogContent dividers>
+    <TableContainer>
+      <Table size="small">
+        <TableHead>
+          <TableRow sx={{ bgcolor: '#f8fafc' }}>
+            <TableCell sx={{ fontWeight: 'bold' }}>PCB Serial</TableCell>
+            <TableCell sx={{ fontWeight: 'bold' }}>Stage Name</TableCell>
+            <TableCell sx={{ fontWeight: 'bold' }}>Completed At (IST)</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {Productivity_History.map((row, index) => (
+            <TableRow key={index} hover>
+              <TableCell>{row.pcbserial}</TableCell>
+              <TableCell>{row.stageName}</TableCell>
+              <TableCell>{formatIST(row.completedAt)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  </DialogContent>
+  <DialogActions>
+    <Button onClick={handleClose} color="primary">Close</Button>
+  </DialogActions>
+</Dialog>
+```
+
+### Key Changes Explained:
+* **IST Formatting:** The `Intl.DateTimeFormat` with `timeZone: 'Asia/Kolkata'` ensures that even if the user's system clock is different, the data remains in Indian time.
+* **Interactivity:** Added `cursor: pointer` and a subtle `:hover` effect to the card so users know it's interactive.
+* **UI Polish:** The table uses `size="small"` and a light background for the header (`#f8fafc`) to keep the "dashboard" feel.
+
+**Would you like me to add a search bar inside the dialog to filter the PCBs by serial number?**
