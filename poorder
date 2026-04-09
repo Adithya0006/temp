@@ -1,0 +1,78 @@
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+@app.get("/dashboard/production-order/{po_number}/details")
+def get_po_deeper_dashboard(po_number: str, db: Session = Depends(init_db)):
+    # 1. Fetch all PCBs for this PO
+    pcbs = db.query(PcbData).filter(PcbData.productionOrder == po_number).all()
+    if not pcbs:
+        raise HTTPException(status_code=404, detail="Production Order not found")
+    
+    total_pcbs = len(pcbs)
+    pcb_ids = [p.PCBserialNoPartNumber for p in pcbs]
+
+    # 2. Get the current active assignment for these PCBs to find their current stage
+    # We join with ProcessFlowMaster to get the human-readable Stage Name
+    active_assignments = db.query(
+        PCBAssignment.assigned_pcb_id,
+        ProcessFlowMaster.step_name
+    ).join(
+        ProcessFlowMaster, 
+        PCBAssignment.current_step_id == ProcessFlowMaster.flow_step_id
+    ).filter(PCBAssignment.assigned_pcb_id.in_(pcb_ids)).all()
+
+    # Create a lookup for current stage
+    pcb_to_stage = {a.assigned_pcb_id: a.step_name for a in active_assignments}
+
+    # 3. Organize Data by Stage
+    # We'll fetch all possible stages first to ensure the dashboard shows the full flow
+    all_stages = db.query(ProcessFlowMaster).order_by(ProcessFlowMaster.step_order).all()
+    
+    # Structure our response dictionary
+    stages_report = {s.step_name: {"count": 0, "pcbs": []} for s in all_stages}
+    stages_report["Not Started"] = {"count": 0, "pcbs": []}
+
+    for p in pcbs:
+        current_stage = pcb_to_stage.get(p.PCBserialNoPartNumber, "Not Started")
+        
+        pcb_detail = {
+            "serial_no": p.serialNo,
+            "part_number": p.partNumber,
+            "pcb_id": p.PCBserialNoPartNumber,
+            "status": p.status
+        }
+        
+        if current_stage in stages_report:
+            stages_report[current_stage]["count"] += 1
+            stages_report[current_stage]["pcbs"].append(pcb_detail)
+        else:
+            # Fallback for stages not in master flow
+            stages_report["Not Started"]["count"] += 1
+            stages_report["Not Started"]["pcbs"].append(pcb_detail)
+
+    # 4. Format for Industry Dashboard (List of Stages)
+    formatted_stages = []
+    # Ensure stages appear in their actual process order
+    for s in all_stages:
+        formatted_stages.append({
+            "stage_name": s.step_name,
+            "count": stages_report[s.step_name]["count"],
+            "items": stages_report[s.step_name]["pcbs"]
+        })
+    
+    # Add "Not Started" at the beginning of the flow
+    formatted_stages.insert(0, {
+        "stage_name": "Not Started / Inventory",
+        "count": stages_report["Not Started"]["count"],
+        "items": stages_report["Not Started"]["pcbs"]
+    })
+
+    return {
+        "po_summary": {
+            "po_number": po_number,
+            "total_pcbs": total_pcbs,
+            "part_number": pcbs[0].partNumber,
+            "description": pcbs[0].description
+        },
+        "pipeline": formatted_stages
+    }
