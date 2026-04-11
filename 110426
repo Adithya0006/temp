@@ -1,0 +1,595 @@
+
+
+
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from sqlalchemy.orm import Session
+from datetime import datetime
+from pydantic import BaseModel
+from typing import List, Optional
+
+# --- Pydantic Schemas for Request Validation ---
+class FormFieldSchema(BaseModel):
+    label: str
+    type: str  # text, number, date, boolean, file
+    required: bool
+    min_limit: Optional[float] = None
+    max_limit: Optional[float] = None
+
+class WorkflowStepSchema(BaseModel):
+    stage_id: int
+    step_sequence: int
+    form_schema: List[FormFieldSchema]
+
+class FullProductTemplateRequest(BaseModel):
+    part_number: str
+    product_type_name: str
+    sub_product_type_name: Optional[str] = None
+    workflow_steps: List[WorkflowStepSchema]
+
+# --- UPDATED POST ENDPOINT ---
+@app.post("/api/forms/save-template")
+async def save_form_template(payload: FullProductTemplateRequest, db: Session = Depends(init_db)):
+    """
+    Saves/Updates Product Master, its specific Workflow Sequence, 
+    and the Dynamic Form Schemas for every stage in that sequence.
+    """
+    try:
+        # 1. Update or Create the Product Master entry
+        product = db.query(ProductTypeMaster).filter(
+            ProductTypeMaster.part_number == payload.part_number
+        ).first()
+
+        if not product:
+            product = ProductTypeMaster(
+                part_number=payload.part_number,
+                product_type_name=payload.product_type_name,
+                sub_product_type_name=payload.sub_product_type_name
+            )
+            db.add(product)
+        else:
+            product.product_type_name = payload.product_type_name
+            product.sub_product_type_name = payload.sub_product_type_name
+        
+        db.flush() # Secure the part_number for foreign keys
+
+        # 2. Sync Workflow Mapping & Form Templates
+        # We clear existing mappings for this product to prevent sequence conflicts
+        db.query(ProductWorkflowMapping).filter(
+            ProductWorkflowMapping.product_type_id == payload.part_number
+        ).delete()
+
+        for step in payload.workflow_steps:
+            # A. Create Workflow Sequence Link
+            new_mapping = ProductWorkflowMapping(
+                product_type_id=payload.part_number,
+                flow_step_id=step.stage_id,
+                step_sequence=step.step_sequence
+            )
+            db.add(new_mapping)
+
+            # B. Update/Create Dynamic Form for this Stage + Product
+            # We filter by both stage_id and product_type to allow different forms for the same stage
+            existing_form = db.query(DynamicFormTemplate).filter(
+                DynamicFormTemplate.stage_id == step.stage_id,
+                DynamicFormTemplate.product_type == payload.part_number
+            ).first()
+
+            # Convert Pydantic list of fields to a serializable dictionary for JSON column
+            serialized_schema = [field.dict() for field in step.form_schema]
+
+            if existing_form:
+                existing_form.form_schema = serialized_schema
+                existing_form.updated_at = datetime.now()
+            else:
+                new_form = DynamicFormTemplate(
+                    stage_id=step.stage_id,
+                    product_type=payload.part_number, # Linked to our ProductMaster
+                    form_schema=serialized_schema,
+                    is_active=True,
+                    created_at=datetime.now()
+                )
+                db.add(new_form)
+
+        # 3. Finalize all changes
+        db.commit()
+        return {
+            "status": "success", 
+            "message": f"Template and Workflow for {payload.part_number} saved successfully."
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error during save: {str(e)}")
+
+
+# --- UPDATED GET CONFIG ENDPOINT ---
+@app.get("/get-form-config/{part_number}/{stage_id}")
+async def get_form_config(part_number: str, stage_id: int, db: Session = Depends(init_db)):
+    """
+    Fetches the specific dynamic form schema for a Part Number at a specific Stage.
+    This allows the Operator Dashboard to be truly product-specific.
+    """
+    # 1. Verify this stage is actually part of this product's assigned workflow
+    workflow_check = db.query(ProductWorkflowMapping).filter(
+        ProductWorkflowMapping.product_type_id == part_number,
+        ProductWorkflowMapping.flow_step_id == stage_id
+    ).first()
+
+    if not workflow_check:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Stage {stage_id} is not part of the defined workflow for Part {part_number}."
+        )
+
+    # 2. Fetch the specific form template
+    template = db.query(DynamicFormTemplate).filter(
+        DynamicFormTemplate.stage_id == stage_id,
+        DynamicFormTemplate.product_type == part_number,
+        DynamicFormTemplate.is_active == True
+    ).first()
+
+    if not template:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"No form schema defined for Part {part_number} at Stage {stage_id}."
+        )
+
+    return {
+        "part_number": part_number,
+        "stage_id": template.stage_id,
+        "sequence": workflow_check.step_sequence,
+        "form_schema": template.form_schema
+    }
+
+
+# --- UPDATED LIST ENDPOINT ---
+@app.get("/api/forms/list-templates")
+async def list_all_templates(db: Session = Depends(init_db)):
+    """
+    Returns a comprehensive list of Products and their configured stages.
+    """
+    products = db.query(ProductTypeMaster).all()
+    
+    results = []
+    for p in products:
+        # Get count of configured stages for this product
+        stage_count = db.query(ProductWorkflowMapping).filter(
+            ProductWorkflowMapping.product_type_id == p.part_number
+        ).count()
+
+        results.append({
+            "part_number": p.part_number,
+            "product_name": p.product_type_name,
+            "sub_type": p.sub_product_type_name,
+            "total_stages": stage_count
+        })
+
+    return results
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+FOR FORMS
+"""
+class DynamicFormTemplate(base):
+    __tablename__ = "dynamic_form_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_type = Column(String, index=True, nullable=True) 
+    stage_id = Column(Integer, ForeignKey("process_flow_master.flow_step_id"))
+    
+    # --- ADD THIS LINE ---
+    stage_name = Column(String, nullable=True) 
+    
+    form_schema = Column(JSON) 
+    version = Column(Integer, default=1)
+    is_active = Column(Boolean, default=True)
+    created_by = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import React, { useState } from 'react';
+import {
+  Box, Paper, Typography, TextField, Button, IconButton, Stack, 
+  MenuItem, Divider, Card, CardContent, Dialog, DialogTitle, 
+  DialogContent, DialogActions, Chip, Select, FormControl, InputLabel,
+  Switch, FormControlLabel
+} from '@mui/material';
+
+// Direct path imports to prevent Webpack memory limit errors
+import AddIcon from '@mui/icons-material/Add';
+import DeleteIcon from '@mui/icons-material/Delete';
+import SaveIcon from '@mui/icons-material/Save';
+import SettingsIcon from '@mui/icons-material/Settings';
+import PostAddIcon from '@mui/icons-material/PostAdd';
+import ImageIcon from '@mui/icons-material/Image';
+import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
+
+import axios from 'axios';
+
+// Supported field types for the Dynamic Form Engine
+const FIELD_TYPES = [
+  { value: 'text', label: 'Short Text' },
+  { value: 'textarea', label: 'Long Text / Remarks' },
+  { value: 'number', label: 'Number' },
+  { value: 'date', label: 'Date Picker (Calendar)' },
+  { value: 'datetime-local', label: 'Date & Time' },
+  { value: 'file', label: 'File Upload (Operator Media)' },
+  { value: 'select', label: 'Dropdown Select' },
+  { value: 'checkbox', label: 'Manual Checkbox (Toggle)' },
+  { value: 'radio', label: 'Radio Selection' },
+  { value: 'header', label: 'Section Header (Visual Only)' },
+  { value: 'image', label: 'Reference Diagram (Read Only)' },
+  { value: 'dynamic_table', label: 'Dynamic Data Table' },
+];
+
+export default function AdvancedFormDesigner() {
+  // Global form state
+  const [formData, setFormData] = useState({
+    stage_id: '',
+    stage_name: '',
+    machine_folder: '',
+    fields: []
+  });
+
+  // Modal state for advanced field settings
+  const [configModal, setConfigModal] = useState({ open: false, index: null });
+
+  /**
+   * Helper: Converts a string to snake_case
+   */
+  const slugify = (text) => {
+    return text
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, '')     // Remove non-word chars
+      .replace(/[\s_-]+/g, '_')     // Replace spaces/hyphens with underscore
+      .replace(/^-+|-+$/g, '');     // Trim underscores from ends
+  };
+
+  /**
+   * Adds a new field to the template with default properties based on type
+   */
+  const addField = (type = 'text') => {
+    const defaultLabel = type === 'header' ? 'NEW SECTION' : 'New Input Field';
+    const newField = {
+      key: slugify(defaultLabel), 
+      label: defaultLabel,
+      type: type,
+      readonly: type === 'header' || type === 'image', 
+      required: false,
+      defaultValue: '',
+      // Default file restrictions
+      ...(type === 'file' && { accept: '.pdf,.xls,.xlsx,.png,.jpg' }),
+      // Default empty options for selection types
+      ...(type === 'select' || type === 'radio' ? { options: [] } : {}),
+      // Default columns for the dynamic waiver/remark table
+      ...(type === 'dynamic_table' ? { columns: ['Sl No', 'Manual Remark', 'Status'] } : {}),
+    };
+    setFormData({ ...formData, fields: [...formData.fields, newField] });
+  };
+
+  /**
+   * Updates a specific field property. 
+   * If the label is updated, it automatically updates the key as well.
+   */
+  const updateField = (index, updates) => {
+    const newFields = [...formData.fields];
+    const currentField = newFields[index];
+    
+    // Auto-generate key if label is being changed
+    if (updates.label !== undefined) {
+        updates.key = slugify(updates.label);
+    }
+
+    newFields[index] = { ...currentField, ...updates };
+    setFormData({ ...formData, fields: newFields });
+  };
+
+  /**
+   * Removes a field from the template
+   */
+  const removeField = (index) => {
+    setFormData({ ...formData, fields: formData.fields.filter((_, i) => i !== index) });
+  };
+
+  /**
+   * Deploys the form configuration to the FastAPI backend
+   */
+  const handleSave = async () => {
+    if (!formData.stage_id || !formData.stage_name) {
+      alert("CRITICAL: Please enter Stage ID and Stage Name before deploying.");
+      return;
+    }
+
+    try {
+      // Final sanitation of keys to ensure no duplicates or empty strings
+      const finalFields = formData.fields.map(f => ({
+        ...f,
+        key: f.key || slugify(f.label) || `field_${Math.random().toString(36).substr(2, 5)}`
+      }));
+      
+      const payload = {
+        stage_id: parseInt(formData.stage_id), 
+        stage_name: formData.stage_name,
+        form_schema: { 
+            stage_name: formData.stage_name,
+            machine_folder: formData.machine_folder,
+            fields: finalFields 
+        }
+      };
+
+      await axios.post('http://localhost:1234/api/forms/save-template', payload);
+      alert("SUCCESS: Form Template successfully deployed to the database!");
+    } catch (e) {
+      console.error("DEPLOYMENT ERROR:", e);
+      alert("ERROR: Failed to save template. Check if the Backend Server is running.");
+    }
+  };
+
+  return (
+    <Box sx={{ p: 4, bgcolor: '#f1f5f9', minHeight: '100vh' }}>
+      <Paper elevation={6} sx={{ p: 4, borderRadius: 4, maxWidth: 1100, margin: 'auto', border: '1px solid #e2e8f0' }}>
+        
+        <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="h4" fontWeight="800" color="#1e293b">Master Form Designer</Typography>
+          <Chip label="Backend-Linked Mode" color="primary" variant="filled" sx={{ fontWeight: 'bold' }} />
+        </Box>
+
+        {/* --- SECTION 1: STAGE METADATA --- */}
+        <Box sx={{ p: 3, mb: 4, bgcolor: '#ffffff', borderRadius: 3, boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}>
+          <Stack direction="row" spacing={3}>
+            <TextField 
+              label="Stage ID (Master)" 
+              required
+              type="number"
+              placeholder="e.g. 10"
+              value={formData.stage_id} 
+              sx={{ width: 180 }}
+              variant="filled"
+              onChange={e => setFormData({...formData, stage_id: e.target.value})} 
+            />
+            <TextField 
+              label="Form Title (Operator Header)" 
+              required
+              fullWidth 
+              placeholder="e.g. Solder Paste Printing - Top"
+              value={formData.stage_name} 
+              variant="filled"
+              onChange={e => setFormData({...formData, stage_name: e.target.value})} 
+            />
+            <TextField 
+              label="Machine Folder ID" 
+              placeholder="e.g. SPI_01"
+              value={formData.machine_folder} 
+              variant="filled"
+              sx={{ width: 250 }}
+              onChange={e => setFormData({...formData, machine_folder: e.target.value})} 
+            />
+          </Stack>
+        </Box>
+
+        <Divider sx={{ mb: 4 }}><Chip label="CONSTRUCT FORM FIELDS" sx={{ bgcolor: '#1e293b', color: '#fff' }} /></Divider>
+
+        {/* --- SECTION 2: DYNAMIC FIELD LIST --- */}
+        <Stack spacing={2.5}>
+          {formData.fields.map((field, index) => (
+            <Card key={index} variant="outlined" sx={{ 
+              borderRadius: 3, 
+              borderLeft: field.type === 'header' ? '8px solid #3b82f6' : '8px solid #10b981',
+              transition: '0.2s',
+              '&:hover': { boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }
+            }}>
+              <CardContent sx={{ py: 2.5 }}>
+                <Stack direction="row" spacing={2} alignItems="center">
+                  <DragIndicatorIcon sx={{ color: '#94a3b8' }} />
+                  
+                  <FormControl size="small" sx={{ minWidth: 200 }}>
+                    <InputLabel sx={{ fontWeight: 'bold' }}>Input Type</InputLabel>
+                    <Select
+                      value={field.type}
+                      label="Input Type"
+                      sx={{ borderRadius: 2, bgcolor: '#fff' }}
+                      onChange={(e) => updateField(index, { type: e.target.value })}
+                    >
+                      {FIELD_TYPES.map(opt => <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>)}
+                    </Select>
+                  </FormControl>
+
+                  <TextField
+                    label="Label / Instruction for Operator"
+                    fullWidth
+                    size="small"
+                    value={field.label}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                    onChange={(e) => updateField(index, { label: e.target.value })}
+                  />
+
+                  <Stack direction="row" spacing={1}>
+                    <IconButton sx={{ bgcolor: '#f0f9ff', color: '#0284c7' }} onClick={() => setConfigModal({ open: true, index })}>
+                      <SettingsIcon />
+                    </IconButton>
+                    <IconButton sx={{ bgcolor: '#fff1f2', color: '#e11d48' }} onClick={() => removeField(index)}>
+                      <DeleteIcon />
+                    </IconButton>
+                  </Stack>
+                </Stack>
+                
+                {/* Field metadata visual indicators */}
+                <Box sx={{ mt: 1.5, ml: 7, display: 'flex', gap: 1 }}>
+                  <Chip 
+                    label={`DB Key: ${field.key}`} 
+                    size="small" 
+                    variant="filled"
+                    sx={{ fontSize: '0.7rem', bgcolor: '#e2e8f0', fontWeight: 'bold' }} 
+                  />
+                  {field.required && <Chip label="Required" color="error" size="small" variant="outlined" sx={{ fontSize: '0.7rem' }} />}
+                  {field.type === 'file' && field.accept && <Chip label={`Files: ${field.accept}`} size="small" color="warning" variant="outlined" sx={{ fontSize: '0.7rem' }} />}
+                </Box>
+              </CardContent>
+            </Card>
+          ))}
+        </Stack>
+
+        {/* --- SECTION 3: TOOLBAR PANEL --- */}
+        <Paper variant="outlined" sx={{ mt: 5, p: 2.5, borderRadius: 4, bgcolor: '#f8fafc', display: 'flex', gap: 2, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <Button variant="contained" sx={{ borderRadius: 3, bgcolor: '#1e293b' }} startIcon={<AddIcon />} onClick={() => addField('text')}>Add Input</Button>
+          <Button variant="contained" sx={{ borderRadius: 3, bgcolor: '#3b82f6' }} startIcon={<PostAddIcon />} onClick={() => addField('header')}>Add Section</Button>
+          <Button variant="contained" sx={{ borderRadius: 3, bgcolor: '#8b5cf6' }} startIcon={<ImageIcon />} onClick={() => addField('image')}>Add Diagram</Button>
+          <Button variant="contained" sx={{ borderRadius: 3, bgcolor: '#f59e0b' }} startIcon={<PlaylistAddIcon />} onClick={() => addField('dynamic_table')}>Add Table</Button>
+          
+          <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+          
+          <Button 
+            variant="contained" 
+            startIcon={<SaveIcon />} 
+            color="success" 
+            sx={{ px: 5, borderRadius: 3, fontWeight: 'bold', boxShadow: '0 4px 14px 0 rgba(0,118,255,0.39)' }} 
+            onClick={handleSave}
+          >
+            Deploy Template
+          </Button>
+        </Paper>
+      </Paper>
+
+      {/* --- SECTION 4: SETTINGS MODAL --- */}
+      <Dialog 
+        open={configModal.open} 
+        onClose={() => setConfigModal({ open: false, index: null })} 
+        fullWidth 
+        maxWidth="sm" 
+        PaperProps={{ sx: { borderRadius: 4 } }}
+      >
+        <DialogTitle sx={{ fontWeight: '800', borderBottom: '1px solid #e2e8f0', mb: 1 }}>Advanced Field Settings</DialogTitle>
+        <DialogContent dividers>
+          {configModal.index !== null && (
+            <Stack spacing={3} sx={{ mt: 1 }}>
+              {/* Internal Key Configuration - Manual override if auto-gen isn't perfect */}
+              <TextField 
+                label="Internal Database Key (Unique)" 
+                fullWidth 
+                value={formData.fields[configModal.index].key} 
+                onChange={e => updateField(configModal.index, { key: e.target.value })} 
+                helperText="System name for reporting. Generated from label automatically."
+              />
+
+              {/* Validation Toggle */}
+              <FormControlLabel
+                control={<Switch checked={formData.fields[configModal.index].required} onChange={e => updateField(configModal.index, { required: e.target.checked })} />}
+                label="Make this field mandatory for the operator"
+              />
+
+              {/* Logic for Checkboxes */}
+              {formData.fields[configModal.index].type === 'checkbox' && (
+                <FormControlLabel
+                  control={<Switch checked={formData.fields[configModal.index].defaultValue === 'true'} onChange={e => updateField(configModal.index, { defaultValue: e.target.checked ? 'true' : 'false' })} />}
+                  label="Initialize as 'Checked'?"
+                />
+              )}
+
+              {/* Logic for File Uploads */}
+              {formData.fields[configModal.index].type === 'file' && (
+                <TextField 
+                  label="Accepted Extensions" 
+                  fullWidth 
+                  value={formData.fields[configModal.index].accept || ''} 
+                  placeholder=".pdf,.jpg,.xlsx"
+                  onChange={e => updateField(configModal.index, { accept: e.target.value })} 
+                />
+              )}
+
+              {/* Logic for Dropdowns/Radio */}
+              {(formData.fields[configModal.index].type === 'select' || formData.fields[configModal.index].type === 'radio') && (
+                <Box sx={{ p: 2, bgcolor: '#f8fafc', borderRadius: 2, border: '1px solid #e2e8f0' }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold' }}>Dropdown/Radio Options</Typography>
+                  <TextField 
+                    fullWidth 
+                    multiline
+                    placeholder="Example: OK, Not OK, NA"
+                    helperText="Enter items separated by commas"
+                    onChange={e => {
+                        const opts = e.target.value.split(',').map(s => ({ value: s.trim(), label: s.trim() }));
+                        updateField(configModal.index, { options: opts });
+                    }}
+                  />
+                </Box>
+              )}
+
+              {/* Logic for Static Reference Diagrams */}
+              {formData.fields[configModal.index].type === 'image' && (
+                <TextField 
+                  label="Diagram Path (Relative to Public Folder)" 
+                  fullWidth 
+                  value={formData.fields[configModal.index].value || ''} 
+                  placeholder="/reference/pcb_top_side.png"
+                  onChange={e => updateField(configModal.index, { value: e.target.value })} 
+                />
+              )}
+
+              {/* Logic for Tables */}
+              {formData.fields[configModal.index].type === 'dynamic_table' && (
+                <TextField 
+                  label="Define Table Columns" 
+                  fullWidth 
+                  placeholder="Sl No, Description, Observation, Status"
+                  onChange={e => updateField(configModal.index, { columns: e.target.value.split(',').map(s => s.trim()) })} 
+                />
+              )}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 3 }}>
+          <Button variant="contained" sx={{ borderRadius: 2, px: 4 }} onClick={() => setConfigModal({ open: false, index: null })}>Apply to Field</Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  );
+}
+
+
+
+
+
+
+
