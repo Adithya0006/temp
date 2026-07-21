@@ -1,0 +1,92 @@
+If a single physical SMT line comprises a sequence of multiple stages (e.g., Stage 1: Paste Printing -> Stage 2: Pick & Place -> Stage 3: Reflow), the PCB isn't just load-balanced for one step. It gets assigned to a line (like SMT-1) and must stay on that specific line until it completes all the stages within that SMT zone.
+
+To support this continuous routing and ensure operators only interact with the PCBs physically in front of them, you will need to add one new table and update three of your existing tables in `Database_models.py`.
+
+Here are the exact SQLAlchemy schemas.
+
+### 1. New Table: `ProductionLine`
+
+This table defines the physical hardware lines on your factory floor.
+
+```python
+class ProductionLine(base):
+    __tablename__ = "production_lines"
+
+    line_id = Column(Integer, primary_key=True, autoincrement=True)
+    line_name = Column(String, unique=True, index=True) # e.g., "SMT-1", "SMT-2"
+    line_zone = Column(String) # e.g., "SMT", "WAVE_SOLDERING"
+    is_active = Column(Boolean, default=True)
+
+```
+
+### 2. Updated Table: `ProcessFlowMaster`
+
+You need a way to tell the system *when* to trigger the load-balancing algorithm. You can add a boolean flag to mark the entry point of the SMT zone.
+
+```python
+class ProcessFlowMaster(base):
+    __tablename__ = "process_flow_master"
+
+    flow_step_id = Column(Integer, primary_key=True, autoincrement=True)
+    step_order = Column(Integer, index=True)
+    step_name = Column(String, unique=True)
+    assignedToNameMRL = Column(String)
+    assignedToNameMRLExpiry = Column(String)
+    next_step_id = Column(Integer)
+    
+    # NEW COLUMN: Mark 'True' for the very first stage of the SMT line
+    is_balancer_entry_step = Column(Boolean, default=False) 
+
+    qualified_operators = relationship("OperatorStepMapping", back_populates="process_step")
+    equipment_to_stages = relationship("Equipments",back_populates="equipment_to_stage")
+    consumable_to_stages = relationship("Consumables",back_populates="consumable_to_stage")
+    qualified_stages = relationship("Processtype",back_populates="qualified_stages_batch")
+
+```
+
+### 3. Updated Table: `PCBAssignment`
+
+When a PCB reaches the `is_balancer_entry_step`, the algorithm calculates the best line and stamps that `line_id` onto the assignment. The PCB keeps this ID as it moves through the subsequent stages.
+
+```python
+class PCBAssignment(base):
+    __tablename__ = "pcb_assignment"
+    
+    assignment_id = Column(Integer, primary_key=True, autoincrement=True)
+    supervisor_staff_no = Column(String)
+    assigned_pcb_id = Column(String)
+    assignment_date = Column(String, default=lambda: datetime.utcnow().isoformat())
+    overall_status = Column(String, default="IN_PROGRESS")
+    current_step_id = Column(Integer)
+
+    # NEW COLUMN: Locks the PCB to a specific physical line
+    assigned_line_id = Column(Integer, ForeignKey("production_lines.line_id"), nullable=True)
+
+```
+
+### 4. Updated Table: `OperatorStepMapping`
+
+If you have SMT-1 and SMT-2 running in parallel, Operator A standing at SMT-1 should not see the queue for SMT-2 on their dashboard. You must map operators not just to a stage, but to a specific line.
+
+```python
+class OperatorStepMapping(base):
+    __tablename__ = "operator_step_mapping"
+    
+    step_map_id = Column(Integer, primary_key=True, autoincrement=True)
+    flow_step_id = Column(Integer, ForeignKey("process_flow_master.flow_step_id"))
+    operator_staff_no = Column(String)
+    operator_name = Column(String)
+    operator_initial = Column(String)
+    operator_MRL = Column(String)
+    operator_MRL_Expiry= Column(String)
+    
+    # NEW COLUMN: Ties an operator to a physical line for their mapped step
+    line_id = Column(Integer, ForeignKey("production_lines.line_id"), nullable=True) 
+
+    process_step = relationship("ProcessFlowMaster", back_populates="qualified_operators")
+
+```
+
+---
+
+Do operators rotate between different parallel lines during a single shift, or are they permanently stationed at one specific line in your system?
