@@ -1,0 +1,1660 @@
+[05-08-2026 06:02 AM] Aa: [04/08, 10:50 pm] Bel Manager Ajay Sir: {
+  "pipeline_id": "assembly_line_v1",
+  "stages": [
+    { "stage_id": "1", "name": "Stage 1", "action_type": "inspect_chassis", "depends_on": [] },
+    { "stage_id": "2", "name": "Stage 2", "action_type": "generic_default", "depends_on": ["1"] },
+    { "stage_id": "3", "name": "Stage 3", "action_type": "generic_default", "depends_on": ["2"] },
+    { "stage_id": "4", "name": "Stage 4", "action_type": "generic_default", "depends_on": ["3"] },
+    { "stage_id": "5", "name": "Stage 5", "action_type": "generic_default", "depends_on": ["4"] },
+    { "stage_id": "6", "name": "Stage 6", "action_type": "generic_default", "depends_on": ["5"] },
+
+    { "stage_id": "7", "name": "Stage 7", "action_type": "generic_default", "depends_on": ["6"] },
+    { "stage_id": "8", "name": "Stage 8", "action_type": "generic_default", "depends_on": ["6"] },
+    { "stage_id": "9", "name": "Stage 9", "action_type": "generic_default", "depends_on": ["6"] },
+    { "stage_id": "10", "name": "Stage 10", "action_type": "apply_paint", "depends_on": ["6"] },
+
+    { "stage_id": "11", "name": "Barrier Gate", "action_type": "generic_default", "depends_on": ["7", "8", "9", "10"] }
+  ]
+}
+[04/08, 10:51 pm] Bel Manager Ajay Sir: import time
+import uuid
+from typing import List, Dict, Any, Set
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, Column, String, Float, DateTime, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+# =========================================================
+# 1. POSTGRESQL DATABASE CONFIGURATION
+# =========================================================
+# Format: postgresql://<user>:<password>@<host>:<port>/<dbname>
+POSTGRES_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/assembly_line"
+
+engine = create_engine(
+    POSTGRES_DATABASE_URL,
+    pool_size=10,        # Base connection pool count
+    max_overflow=20,     # Maximum overflow connections under load
+    pool_pre_ping=True   # Handles dropped DB connections automatically
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# =========================================================
+# 2. POSTGRESQL TABLE SCHEMAS (JSONB Native)
+# =========================================================
+class ItemStateModel(Base):
+    tablename = "item_states"
+
+    item_id = Column(String(64), primary_key=True)
+    pipeline_id = Column(String(64), nullable=False, index=True)
+    status = Column(String(20), default="IN_PROGRESS", nullable=False)
+    completed_stages = Column(JSONB, default=list, nullable=False)  # Stored as native JSONB array
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class ExecutionLogModel(Base):
+    tablename = "execution_logs"
+
+    log_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    item_id = Column(String(64), nullable=False, index=True)
+    stage_id = Column(String(64), nullable=False)
+    duration_ms = Column(Float, nullable=False)
+    input_payload = Column(JSONB, default=dict)   # Queriable metadata
+    output_payload = Column(JSONB, default=dict)  # Queriable metadata
+    executed_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+Base.metadata.create_all(bind=engine)
+
+# =========================================================
+# 3. GENERIC ACTION REGISTRY & DAG RULE ENGINE
+# =========================================================
+ACTION_REGISTRY: Dict[str, Any] = {}
+
+def register_action(action_name: str):
+    def decorator(func):
+        ACTION_REGISTRY[action_name] = func
+        return func
+    return decorator
+
+@register_action("chassis_check")
+def handle_chassis(payload: dict):
+    return {"chassis_status": "APPROVED", "torque_nm": 45.2}
+
+@register_action("paint_job")
+def handle_paint(payload: dict):
+    return {"color": payload.get("color", "Midnight Blue"), "layers": 3}
+[05-08-2026 06:02 AM] Aa: # Configuration Schema Models
+class StageConfig(BaseModel):
+    stage_id: str
+    name: str
+    action_type: str = "default"
+    depends_on: List[str] = []
+
+class PipelineConfig(BaseModel):
+    pipeline_id: str
+    stages: List[StageConfig]
+
+PIPELINE_STORE: Dict[str, PipelineConfig] = {}
+
+def evaluate_allowed_stages(config: PipelineConfig, completed: Set[str]) -> List[str]:
+    allowed = []
+    for stage in config.stages:
+        if stage.stage_id in completed:
+            continue
+        if set(stage.depends_on).issubset(completed):
+            allowed.append(stage.stage_id)
+    return allowed
+
+# =========================================================
+# 4. FASTAPI API ENDPOINTS
+# =========================================================
+app = FastAPI(title="PostgreSQL Generic Pipeline Engine")
+
+class PipelineStartRequest(BaseModel):
+    item_id: str
+    pipeline_id: str
+
+class PipelineExecuteRequest(BaseModel):
+    item_id: str
+    target_stage_id: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/config/register-pipeline")
+def register_pipeline(config: PipelineConfig):
+    PIPELINE_STORE[config.pipeline_id] = config
+    return {"status": "SUCCESS", "pipeline_id": config.pipeline_id}
+
+
+@app.post("/pipeline/start")
+def start_pipeline(req: PipelineStartRequest):
+    if req.pipeline_id not in PIPELINE_STORE:
+        raise HTTPException(status_code=404, detail="Pipeline configuration not found")
+
+    db = SessionLocal()
+    try:
+        existing = db.query(ItemStateModel).filter(ItemStateModel.item_id == req.item_id).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Item already initialized")
+
+        item_state = ItemStateModel(
+            item_id=req.item_id,
+            pipeline_id=req.pipeline_id,
+            completed_stages=[]
+        )
+        db.add(item_state)
+        db.commit()
+
+        allowed = evaluate_allowed_stages(PIPELINE_STORE[req.pipeline_id], set())
+        return {"item_id": req.item_id, "allowed_next_stages": allowed}
+    finally:
+        db.close()
+
+
+@app.post("/pipeline/execute-stage")
+def execute_stage(req: PipelineExecuteRequest):
+    db = SessionLocal()
+    try:
+        item = db.query(ItemStateModel).filter(ItemStateModel.item_id == req.item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        config = PIPELINE_STORE.get(item.pipeline_id)
+        completed = set(item.completed_stages)
+        allowed = evaluate_allowed_stages(config, completed)
+
+        if req.target_stage_id not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Stage '{req.target_stage_id}' locked. Allowed: {allowed}"
+            )
+
+        # Execute registered action
+        stage_conf = next(s for s in config.stages if s.stage_id == req.target_stage_id)
+        handler = ACTION_REGISTRY.get(
+            stage_conf.action_type, 
+            lambda p: {"status": f"Executed default stage {req.target_stage_id}"}
+        )
+
+        start = time.perf_counter()
+        output_metadata = handler(req.payload)
+        duration_ms = (time.perf_counter() - start) * 1000
+
+        # Update JSONB array in PostgreSQL
+        completed.add(req.target_stage_id)
+        item.completed_stages = list(completed)
+
+        next_allowed = evaluate_allowed_stages(config, completed)
+        if not next_allowed:
+            item.status = "COMPLETED"
+
+        # Log entry in PostgreSQL using native UUID and JSONB
+        log = ExecutionLogModel(
+            item_id=req.item_id,
+            stage_id=req.target_stage_id,
+            duration_ms=round(duration_ms, 2),
+            input_payload=req.payload,
+            output_payload=output_metadata
+        )
+        db.add(log)
+        db.commit()
+[05-08-2026 06:02 AM] Aa: return {
+            "item_id": req.item_id,
+            "executed_stage": req.target_stage_id,
+            "completed_stages": list(completed),
+            "allowed_next_stages": next_allowed,
+            "output_metadata": output_metadata,
+            "pipeline_status": item.status
+        }
+    finally:
+        db.close()
+
+if name == "main":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+[04/08, 10:53 pm] Bel Manager Ajay Sir: import time
+import uuid
+from typing import List, Dict, Any, Set
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, Column, String, Float, JSON, DateTime, func
+from sqlalchemy.orm import declarative_base, sessionmaker
+import uvicorn
+
+# =========================================================
+# 1. DATABASE SETUP (SQLite)
+# =========================================================
+DATABASE_URL = "sqlite:///./assembly_ui_pipeline.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
+
+class ItemStateModel(Base):
+    tablename = "item_states"
+    item_id = Column(String(64), primary_key=True)
+    status = Column(String(20), default="IN_PROGRESS")
+    completed_stages = Column(JSON, default=list)
+
+class ExecutionLogModel(Base):
+    tablename = "execution_logs"
+    log_id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    item_id = Column(String(64), nullable=False)
+    stage_id = Column(String(64), nullable=False)
+    duration_ms = Column(Float, nullable=False)
+    output_payload = Column(JSON, default=dict)
+    executed_at = Column(DateTime(timezone=True), server_default=func.now())
+
+Base.metadata.create_all(bind=engine)
+
+# =========================================================
+# 2. DYNAMIC WORKFLOW & DAG RULES (1-6 -> 7-10 -> 11)
+# =========================================================
+DAG_CONFIG = {
+    "1": {"name": "Stage 1: Chassis Frame", "depends_on": []},
+    "2": {"name": "Stage 2: Body Welding", "depends_on": ["1"]},
+    "3": {"name": "Stage 3: Engine Fitment", "depends_on": ["2"]},
+    "4": {"name": "Stage 4: Electrical Harness", "depends_on": ["3"]},
+    "5": {"name": "Stage 5: Fluid Lines", "depends_on": ["4"]},
+    "6": {"name": "Stage 6: Pre-Group Audit", "depends_on": ["5"]},
+    # Group Stages (7-10) all depend on Stage 6
+    "7": {"name": "Stage 7: Interior Trim", "depends_on": ["6"]},
+    "8": {"name": "Stage 8: Wheel Mounting", "depends_on": ["6"]},
+    "9": {"name": "Stage 9: Glass Install", "depends_on": ["6"]},
+    "10": {"name": "Stage 10: Exterior Paint", "depends_on": ["6"]},
+    # Barrier Stage 11 depends on ALL group stages
+    "11": {"name": "Stage 11: Final Barrier QA", "depends_on": ["7", "8", "9", "10"]}
+}
+
+def evaluate_allowed_stages(completed: Set[str]) -> List[str]:
+    allowed = []
+    for stage_id, meta in DAG_CONFIG.items():
+        if stage_id in completed:
+            continue
+        if set(meta["depends_on"]).issubset(completed):
+            allowed.append(stage_id)
+    return allowed
+
+def mock_action_handler(stage_id: str, item_id: str) -> Dict[str, Any]:
+    """Simulates dynamic stage execution work and returns dynamic metadata."""
+    metadata = {
+        "1": {"chassis_serial": f"CHS-{item_id}", "structural_integrity": "PASS"},
+        "6": {"pre_group_gate": "PASSED", "unlocked_group": [7, 8, 9, 10]},
+        "10": {"paint_color": "Midnight Blue", "uv_cure_time_sec": 40},
+        "11": {"qa_stamp": "CERTIFIED_2026", "final_status": "READY_FOR_SHIPMENT"}
+    }
+    return metadata.get(stage_id, {"status": "SUCCESS", "message": f"Stage {stage_id} executed."})
+
+# =========================================================
+# 3. FASTAPI BACKEND ENDPOINTS
+# =========================================================
+app = FastAPI(title="Full-Stack Assembly Line Engine")
+
+class StartRequest(BaseModel):
+    item_id: str
+[05-08-2026 06:02 AM] Aa: class ExecuteRequest(BaseModel):
+    item_id: str
+    stage_id: str
+
+@app.post("/api/pipeline/start")
+def start_pipeline(req: StartRequest):
+    db = SessionLocal()
+    existing = db.query(ItemStateModel).filter(ItemStateModel.item_id == req.item_id).first()
+    if existing:
+        db.close()
+        raise HTTPException(status_code=400, detail="Item ID already exists.")
+    
+    item = ItemStateModel(item_id=req.item_id, completed_stages=[])
+    db.add(item)
+    db.commit()
+    db.close()
+    return {"item_id": req.item_id, "allowed_next_stages": ["1"], "completed_stages": []}
+
+@app.get("/api/pipeline/state/{item_id}")
+def get_pipeline_state(item_id: str):
+    db = SessionLocal()
+    item = db.query(ItemStateModel).filter(ItemStateModel.item_id == item_id).first()
+    if not item:
+        db.close()
+        raise HTTPException(status_code=404, detail="Item not found.")
+    
+    completed = set(item.completed_stages)
+    allowed = evaluate_allowed_stages(completed)
+    logs = db.query(ExecutionLogModel).filter(ExecutionLogModel.item_id == item_id).all()
+    
+    log_history = [
+        {"stage_id": l.stage_id, "duration_ms": l.duration_ms, "output": l.output_payload} 
+        for l in logs
+    ]
+    db.close()
+    return {
+        "item_id": item_id,
+        "status": item.status,
+        "completed_stages": sorted(list(completed)),
+        "allowed_next_stages": allowed,
+        "logs": log_history
+    }
+
+@app.post("/api/pipeline/execute")
+def execute_stage(req: ExecuteRequest):
+    db = SessionLocal()
+    item = db.query(ItemStateModel).filter(ItemStateModel.item_id == req.item_id).first()
+    if not item:
+        db.close()
+        raise HTTPException(status_code=404, detail="Item not found.")
+
+    completed = set(item.completed_stages)
+    allowed = evaluate_allowed_stages(completed)
+
+    if req.stage_id not in allowed:
+        db.close()
+        raise HTTPException(status_code=400, detail=f"Stage {req.stage_id} is locked. Allowed: {allowed}")
+
+    start = time.perf_counter()
+    output_metadata = mock_action_handler(req.stage_id, req.item_id)
+    duration = round((time.perf_counter() - start) * 1000, 2)
+
+    completed.add(req.stage_id)
+    item.completed_stages = list(completed)
+    
+    next_allowed = evaluate_allowed_stages(completed)
+    if not next_allowed:
+        item.status = "COMPLETED"
+
+    log = ExecutionLogModel(
+        item_id=req.item_id,
+        stage_id=req.stage_id,
+        duration_ms=duration,
+        output_payload=output_metadata
+    )
+    db.add(log)
+    db.commit()
+
+    db.close()
+    return get_pipeline_state(req.item_id)
+
+# =========================================================
+# 4. FRONTEND UI DASHBOARD (Served at /)
+# =========================================================
+@app.get("/", response_class=HTMLResponse)
+def serve_ui():
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Assembly Line Control Center</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-slate-900 text-slate-100 font-sans min-h-screen p-8">
+        <div class="max-w-6xl mx-auto space-y-8">
+            
+            <!-- Header -->
+            <header class="flex justify-between items-center border-b border-slate-700 pb-4">
+                <div>
+                    <h1 class="text-3xl font-bold text-sky-400">Assembly Line Engine</h1>
+                    <p class="text-sm text-slate-400">Sequential (1-6) &rarr; Flexible Group (7-10) &rarr; Barrier Gate (11)</p>
+                </div>
+                <div id="status-badge" class="px-4 py-2 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-mono text-sm">
+                    Status: Idle
+                </div>
+            </header>
+
+            <!-- Control Bar -->
+[05-08-2026 06:02 AM] Aa: <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 flex items-center space-x-4">
+                <input id="item-input" type="text" placeholder="Enter Item ID (e.g. ITEM-2026)" 
+                       class="bg-slate-900 border border-slate-600 rounded-lg px-4 py-2 text-white w-72 focus:outline-none focus:border-sky-500">
+                <button onclick="startPipeline()" class="bg-sky-600 hover:bg-sky-500 font-semibold px-6 py-2 rounded-lg transition">
+                    Start New Item
+                </button>
+            </div>
+
+            <!-- Pipeline Flow Dashboard -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                
+                <!-- Sequential Phase -->
+                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                    <h2 class="text-lg font-semibold text-sky-400 mb-4">1. Sequential Phase (1-6)</h2>
+                    <div id="seq-stages" class="space-y-3"></div>
+                </div>
+
+                <!-- Group Phase -->
+                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                    <h2 class="text-lg font-semibold text-purple-400 mb-4">2. Dynamic Group (7-10)</h2>
+                    <div id="group-stages" class="space-y-3"></div>
+                </div>
+
+                <!-- Barrier Phase -->
+                <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                    <h2 class="text-lg font-semibold text-emerald-400 mb-4">3. Barrier Synchronization</h2>
+                    <div id="barrier-stages" class="space-y-3"></div>
+                </div>
+            </div>
+
+            <!-- Dynamic Execution Logs -->
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h2 class="text-lg font-semibold text-slate-300 mb-4">Dynamic Execution Audit Log</h2>
+                <div id="log-console" class="bg-slate-950 p-4 rounded-lg font-mono text-xs text-emerald-400 space-y-2 h-48 overflow-y-auto border border-slate-800">
+                    <p class="text-slate-500">// System ready. Initialize an item to start tracking metadata...</p>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Frontend JavaScript Logic -->
+        <script>
+            let activeItemId = null;
+            const stages = {
+                seq: ["1", "2", "3", "4", "5", "6"],
+                group: ["7", "8", "9", "10"],
+                barrier: ["11"]
+            };
+
+            async function startPipeline() {
+                const id = document.getElementById("item-input").value.trim();
+                if (!id) return alert("Please enter an Item ID");
+
+                const res = await fetch("/api/pipeline/start", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({item_id: id})
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    return alert(err.detail);
+                }
+
+                activeItemId = id;
+                fetchState();
+            }
+
+            async function executeStage(stageId) {
+                if (!activeItemId) return;
+
+                const res = await fetch("/api/pipeline/execute", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({item_id: activeItemId, stage_id: stageId})
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    renderState(data);
+                } else {
+                    const err = await res.json();
+                    alert(err.detail);
+                }
+            }
+
+            async function fetchState() {
+                if (!activeItemId) return;
+                const res = await fetch(/api/pipeline/state/${activeItemId});
+                const data = await res.json();
+                renderState(data);
+            }
+[05-08-2026 06:02 AM] Aa: function renderState(data) {
+                document.getElementById("status-badge").innerText = Item: ${data.item_id} | Status: ${data.status};
+                
+                renderStageGroup("seq-stages", stages.seq, data);
+                renderStageGroup("group-stages", stages.group, data);
+                renderStageGroup("barrier-stages", stages.barrier, data);
+                
+                // Render Logs
+                const logBox = document.getElementById("log-console");
+                logBox.innerHTML = data.logs.map(l => 
+                    <div><span class="text-sky-400">[Stage ${l.stage_id}]</span> Executed in ${l.duration_ms}ms | Payload: ${JSON.stringify(l.output)}</div>
+                ).join("") || <p class="text-slate-500">// Pipeline initialized. Click Stage 1 to begin.</p>;
+                logBox.scrollTop = logBox.scrollHeight;
+            }
+
+            function renderStageGroup(elementId, stageList, data) {
+                const container = document.getElementById(elementId);
+                container.innerHTML = stageList.map(s => {
+                    const isCompleted = data.completed_stages.includes(s);
+                    const isAllowed = data.allowed_next_stages.includes(s);
+                    
+                    let btnStyle = "bg-slate-900 border-slate-700 text-slate-500 cursor-not-allowed";
+                    let statusLabel = "LOCKED";
+                    
+                    if (isCompleted) {
+                        btnStyle = "bg-emerald-950 border-emerald-600 text-emerald-400 cursor-default";
+                        statusLabel = "✓ COMPLETED";
+                    } else if (isAllowed) {
+                        btnStyle = "bg-sky-600 border-sky-400 text-white hover:bg-sky-500 cursor-pointer animate-pulse";
+                        statusLabel = "READY";
+                    }
+
+                    return 
+                        <div class="flex items-center justify-between p-3 border rounded-lg ${btnStyle}" 
+                             onclick="${isAllowed ? executeStage('${s}') : ''}">
+                            <span class="font-medium text-sm">Stage ${s}</span>
+                            <span class="font-mono text-xs font-semibold">${statusLabel}</span>
+                        </div>
+                    ;
+                }).join("");
+            }
+        </script>
+    </body>
+    </html>
+    """
+
+if name == "main":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+[04/08, 10:54 pm] Bel Manager Ajay Sir: Some sample code
+[04/08, 10:55 pm] Bel Manager Ajay Sir: We can create process will cover all combinations
+[04/08, 10:55 pm] Bel Manager Ajay Sir: According to me
+
+U people can also add value addition
+[04/08, 11:00 pm] Bel Manager Ajay Sir: {
+  "pipeline_id": "assembly_line_v1",
+  "stages": [
+    { "stage_id": "1", "name": "Stage 1: Chassis Frame", "action_type": "chassis_check", "depends_on": [] },
+    { "stage_id": "2", "name": "Stage 2: Body Welding", "action_type": "default", "depends_on": ["1"] },
+    { "stage_id": "3", "name": "Stage 3: Engine Fitment", "action_type": "default", "depends_on": ["2"] },
+    { "stage_id": "4", "name": "Stage 4: Electrical Harness", "action_type": "default", "depends_on": ["3"] },
+    { "stage_id": "5", "name": "Stage 5: Fluid Lines", "action_type": "default", "depends_on": ["4"] },
+    { "stage_id": "6", "name": "Stage 6: Pre-Group Audit", "action_type": "audit_check", "depends_on": ["5"] },
+    { "stage_id": "7", "name": "Stage 7: Interior Trim", "action_type": "default", "depends_on": ["6"] },
+    { "stage_id": "8", "name": "Stage 8: Wheel Mounting", "action_type": "default", "depends_on": ["6"] },
+    { "stage_id": "9", "name": "Stage 9: Glass Install", "action_type": "default", "depends_on": ["6"] },
+    { "stage_id": "10", "name": "Stage 10: Exterior Paint", "action_type": "paint_job", "depends_on": ["6"] },
+[05-08-2026 06:02 AM] Aa: { "stage_id": "11", "name": "Stage 11: Final Barrier QA", "action_type": "final_qa", "depends_on": ["7", "8", "9", "10"] }
+  ]
+}
+[04/08, 11:00 pm] Bel Manager Ajay Sir: import uuid
+from sqlalchemy import create_engine, Column, String, Float, JSON, DateTime, func
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+DATABASE_URL = "sqlite:///./assembly_line.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
+
+class ItemStateModel(Base):
+    tablename = "item_states"
+    item_id = Column(String(64), primary_key=True)
+    pipeline_id = Column(String(64), nullable=False)
+    status = Column(String(20), default="IN_PROGRESS")
+    completed_stages = Column(JSON, default=list)
+
+class ExecutionLogModel(Base):
+    tablename = "execution_logs"
+    log_id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    item_id = Column(String(64), nullable=False)
+    stage_id = Column(String(64), nullable=False)
+    duration_ms = Column(Float, nullable=False)
+    output_payload = Column(JSON, default=dict)
+    executed_at = Column(DateTime(timezone=True), server_default=func.now())
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
+[04/08, 11:00 pm] Bel Manager Ajay Sir: from typing import List, Dict, Any
+from pydantic import BaseModel, Field
+
+class StageConfig(BaseModel):
+    stage_id: str
+    name: str
+    action_type: str = "default"
+    depends_on: List[str] = []
+
+class PipelineConfig(BaseModel):
+    pipeline_id: str
+    stages: List[StageConfig]
+
+class StartPipelineRequest(BaseModel):
+    item_id: str
+    pipeline_id: str = "assembly_line_v1"
+
+class ExecuteStageRequest(BaseModel):
+    item_id: str
+    stage_id: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+[04/08, 11:00 pm] Bel Manager Ajay Sir: import time
+from typing import List, Set, Dict, Any
+from schemas import PipelineConfig
+
+def evaluate_allowed_stages(config: PipelineConfig, completed: Set[str]) -> List[str]:
+    """Calculates allowed stages dynamically based on completed prerequisites."""
+    allowed = []
+    for stage in config.stages:
+        if stage.stage_id in completed:
+            continue
+        if set(stage.depends_on).issubset(completed):
+            allowed.append(stage.stage_id)
+    return allowed
+
+def execute_stage_handler(action_type: str, stage_id: str, item_id: str, payload: dict) -> Dict[str, Any]:
+    """Dispatches execution to matching stage handler."""
+    start = time.perf_counter()
+
+    if action_type == "chassis_check":
+        result = {"chassis_serial": f"CHS-{item_id}", "status": "APPROVED", "torque_nm": 45.2}
+    elif action_type == "audit_check":
+        result = {"audit_status": "PASSED", "unlocked_group_stages": ["7", "8", "9", "10"]}
+    elif action_type == "paint_job":
+        color = payload.get("color", "Midnight Blue")
+        result = {"painted_color": color, "drying_time_sec": 30}
+    elif action_type == "final_qa":
+        result = {"qa_stamp": "CERTIFIED_2026", "readiness": "SHIPPABLE"}
+    else:
+        result = {"message": f"Stage '{stage_id}' executed successfully."}
+
+    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    return {"output": result, "duration_ms": max(duration_ms, 0.1)}
+[04/08, 11:00 pm] Bel Manager Ajay Sir: import json
+from pathlib import Path
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+import uvicorn
+
+from database import SessionLocal, init_db, ItemStateModel, ExecutionLogModel
+from schemas import PipelineConfig, StartPipelineRequest, ExecuteStageRequest
+from engine import evaluate_allowed_stages, execute_stage_handler
+
+init_db()
+
+app = FastAPI(title="Assembly Line Pipeline API")
+PIPELINE_STORE: dict[str, PipelineConfig] = {}
+
+# Load config.json on startup
+config_path = Path(file).parent / "config.json"
+if config_path.exists():
+    with open(config_path, "r") as f:
+        data = json.load(f)
+        PIPELINE_STORE[data["pipeline_id"]] = PipelineConfig(**data)
+[05-08-2026 06:02 AM] Aa: @app.get("/", response_class=HTMLResponse)
+def serve_ui():
+    html_path = Path(file).parent / "index.html"
+    return html_path.read_text()
+
+@app.post("/api/pipeline/start")
+def start_pipeline(req: StartPipelineRequest):
+    if req.pipeline_id not in PIPELINE_STORE:
+        raise HTTPException(status_code=404, detail="Pipeline config not found")
+
+    db = SessionLocal()
+    try:
+        existing = db.query(ItemStateModel).filter(ItemStateModel.item_id == req.item_id).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Item already exists")
+
+        item = ItemStateModel(item_id=req.item_id, pipeline_id=req.pipeline_id, completed_stages=[])
+        db.add(item)
+        db.commit()
+
+        allowed = evaluate_allowed_stages(PIPELINE_STORE[req.pipeline_id], set())
+        return {"item_id": req.item_id, "status": item.status, "completed_stages": [], "allowed_next_stages": allowed}
+    finally:
+        db.close()
+
+@app.get("/api/pipeline/state/{item_id}")
+def get_state(item_id: str):
+    db = SessionLocal()
+    try:
+        item = db.query(ItemStateModel).filter(ItemStateModel.item_id == item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        config = PIPELINE_STORE[item.pipeline_id]
+        completed = set(item.completed_stages)
+        allowed = evaluate_allowed_stages(config, completed)
+
+        logs = db.query(ExecutionLogModel).filter(ExecutionLogModel.item_id == item_id).all()
+        log_data = [{"stage_id": l.stage_id, "duration_ms": l.duration_ms, "output": l.output_payload} for l in logs]
+
+        return {
+            "item_id": item.item_id,
+            "pipeline_id": item.pipeline_id,
+            "status": item.status,
+            "completed_stages": sorted(list(completed)),
+            "allowed_next_stages": allowed,
+            "logs": log_data
+        }
+    finally:
+        db.close()
+
+@app.post("/api/pipeline/execute")
+def execute_stage(req: ExecuteStageRequest):
+    db = SessionLocal()
+    try:
+        item = db.query(ItemStateModel).filter(ItemStateModel.item_id == req.item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        config = PIPELINE_STORE.get(item.pipeline_id)
+        completed = set(item.completed_stages)
+        allowed = evaluate_allowed_stages(config, completed)
+
+        if req.stage_id not in allowed:
+            raise HTTPException(status_code=400, detail=f"Stage {req.stage_id} is locked. Allowed: {allowed}")
+
+        stage_conf = next(s for s in config.stages if s.stage_id == req.stage_id)
+        res = execute_stage_handler(stage_conf.action_type, req.stage_id, req.item_id, req.payload)
+
+        completed.add(req.stage_id)
+        item.completed_stages = list(completed)
+
+        next_allowed = evaluate_allowed_stages(config, completed)
+        if not next_allowed:
+            item.status = "COMPLETED"
+
+        log = ExecutionLogModel(
+            item_id=req.item_id,
+            stage_id=req.stage_id,
+            duration_ms=res["duration_ms"],
+            output_payload=res["output"]
+        )
+        db.add(log)
+        db.commit()
+
+        return get_state(req.item_id)
+    finally:
+        db.close()
+
+if name == "main":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+[04/08, 11:00 pm] Bel Manager Ajay Sir: <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Assembly Line Control Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans min-h-screen p-8">
+    <div class="max-w-6xl mx-auto space-y-8">
+        <header class="flex justify-between items-center border-b border-slate-700 pb-4">
+            <div>
+[05-08-2026 06:02 AM] Aa: <h1 class="text-3xl font-bold text-sky-400">Assembly Line Engine</h1>
+                <p class="text-sm text-slate-400">Sequential (1-6) &rarr; Group (7-10) &rarr; Barrier Gate (11)</p>
+            </div>
+            <div id="status-badge" class="px-4 py-2 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-mono text-sm">
+                Status: Idle
+            </div>
+        </header>
+
+        <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 flex items-center space-x-4">
+            <input id="item-input" type="text" placeholder="Enter Item ID (e.g. CAR-990)" 
+                   class="bg-slate-900 border border-slate-600 rounded-lg px-4 py-2 text-white w-72 focus:outline-none focus:border-sky-500">
+            <button onclick="startPipeline()" class="bg-sky-600 hover:bg-sky-500 font-semibold px-6 py-2 rounded-lg transition">
+                Start New Item
+            </button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h2 class="text-lg font-semibold text-sky-400 mb-4">1. Sequential (1-6)</h2>
+                <div id="seq-stages" class="space-y-3"></div>
+            </div>
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h2 class="text-lg font-semibold text-purple-400 mb-4">2. Flexible Group (7-10)</h2>
+                <div id="group-stages" class="space-y-3"></div>
+            </div>
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h2 class="text-lg font-semibold text-emerald-400 mb-4">3. Barrier Synchronization</h2>
+                <div id="barrier-stages" class="space-y-3"></div>
+            </div>
+        </div>
+
+        <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+            <h2 class="text-lg font-semibold text-slate-300 mb-4">Audit Execution Log</h2>
+            <div id="log-console" class="bg-slate-950 p-4 rounded-lg font-mono text-xs text-emerald-400 space-y-2 h-48 overflow-y-auto border border-slate-800">
+                <p class="text-slate-500">// Ready. Initialize an item above to begin processing...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let activeItemId = null;
+        const stageGroups = { seq: ["1","2","3","4","5","6"], group: ["7","8","9","10"], barrier: ["11"] };
+
+        async function startPipeline() {
+            const id = document.getElementById("item-input").value.trim();
+            if (!id) return alert("Please enter an Item ID");
+
+            const res = await fetch("/api/pipeline/start", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({item_id: id})
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                return alert(err.detail);
+            }
+
+            activeItemId = id;
+            fetchState();
+        }
+
+        async function executeStage(stageId) {
+            if (!activeItemId) return;
+            const res = await fetch("/api/pipeline/execute", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({item_id: activeItemId, stage_id: stageId})
+            });
+
+            if (res.ok) {
+                renderState(await res.json());
+            } else {
+                const err = await res.json();
+                alert(err.detail);
+            }
+        }
+
+        async function fetchState() {
+            if (!activeItemId) return;
+            const res = await fetch(/api/pipeline/state/${activeItemId});
+            renderState(await res.json());
+        }
+[05-08-2026 06:02 AM] Aa: function renderState(data) {
+            document.getElementById("status-badge").innerText = Item: ${data.item_id} | Status: ${data.status};
+            renderGroup("seq-stages", stageGroups.seq, data);
+            renderGroup("group-stages", stageGroups.group, data);
+            renderGroup("barrier-stages", stageGroups.barrier, data);
+
+            const logBox = document.getElementById("log-console");
+            logBox.innerHTML = data.logs.map(l => 
+                <div><span class="text-sky-400">[Stage ${l.stage_id}]</span> Executed in ${l.duration_ms}ms | Payload: ${JSON.stringify(l.output)}</div>
+            ).join("") || <p class="text-slate-500">// Pipeline started. Click Stage 1 to proceed.</p>;
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+
+        function renderGroup(elementId, stageList, data) {
+            const container = document.getElementById(elementId);
+            container.innerHTML = stageList.map(s => {
+                const isDone = data.completed_stages.includes(s);
+                const isNext = data.allowed_next_stages.includes(s);
+
+                let cls = "bg-slate-900 border-slate-700 text-slate-500 cursor-not-allowed";
+                let badge = "LOCKED";
+
+                if (isDone) {
+                    cls = "bg-emerald-950 border-emerald-600 text-emerald-400 cursor-default";
+                    badge = "✓ DONE";
+                } else if (isNext) {
+                    cls = "bg-sky-600 border-sky-400 text-white cursor-pointer hover:bg-sky-500 animate-pulse";
+                    badge = "READY";
+                }
+
+                return 
+                    <div class="flex items-center justify-between p-3 border rounded-lg ${cls}"
+                         onclick="${isNext ? executeStage('${s}') : ''}">
+                        <span class="font-medium text-sm">Stage ${s}</span>
+                        <span class="font-mono text-xs font-semibold">${badge}</span>
+                    </div>
+                ;
+            }).join("");
+        }
+    </script>
+</body>
+</html>
+[04/08, 11:03 pm] Bel Manager Ajay Sir: import React, { useState } from 'react';
+
+// Configuration mapped directly from config.json
+import pipelineConfig from './config.json';
+
+export default function AssemblyLineGUI() {
+  const [itemId, setItemId] = useState('');
+  const [activeItem, setActiveItem] = useState(null);
+  const [pipelineState, setPipelineState] = useState({
+    status: 'IDLE',
+    completed_stages: [],
+    allowed_next_stages: [],
+    logs: []
+  });
+  const [loading, setLoading] = useState(false);
+
+  // Initialize a new Pipeline Item
+  const handleStartPipeline = async (e) => {
+    e.preventDefault();
+    if (!itemId.trim()) return;
+
+    setLoading(true);
+    try {
+      const res = await fetch('/api/pipeline/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_id: itemId, pipeline_id: pipelineConfig.pipeline_id })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Initialization failed');
+
+      setActiveItem(itemId);
+      setPipelineState({
+        status: data.status || 'IN_PROGRESS',
+        completed_stages: data.completed_stages || [],
+        allowed_next_stages: data.allowed_next_stages || ['1'],
+        logs: []
+      });
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Process next target stage dynamically
+  const handleExecuteStage = async (stageId) => {
+    if (!activeItem || loading) return;
+
+    setLoading(true);
+    try {
+      const res = await fetch('/api/pipeline/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_id: activeItem,
+          stage_id: stageId,
+          payload: { executed_by: 'React_Dashboard_Operator' }
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Stage execution failed');
+[05-08-2026 06:02 AM] Aa: setPipelineState({
+        status: data.status,
+        completed_stages: data.completed_stages,
+        allowed_next_stages: data.allowed_next_stages,
+        logs: data.logs || []
+      });
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Helper to filter stages from JSON configuration by group
+  const getStagesByGroup = (groupName) => 
+    pipelineConfig.stages.filter(s => s.group === groupName);
+
+  return (
+    <div className="max-w-6xl mx-auto p-6 bg-slate-900 text-white min-h-screen">
+      {/* Header */}
+      <div className="flex justify-between items-center pb-6 border-b border-slate-700">
+        <div>
+          <h1 className="text-2xl font-bold text-sky-400">Assembly Line React Control Dashboard</h1>
+          <p className="text-sm text-slate-400">Pipeline ID: {pipelineConfig.pipeline_id}</p>
+        </div>
+        <div className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm font-mono">
+          Item: <span className="text-sky-300">{activeItem || 'None'}</span> | 
+          Status: <span className="text-emerald-400">{pipelineState.status}</span>
+        </div>
+      </div>
+
+      {/* Item Start Control Bar */}
+      <form onSubmit={handleStartPipeline} className="my-6 flex gap-4 bg-slate-800 p-4 rounded-lg">
+        <input
+          type="text"
+          value={itemId}
+          onChange={(e) => setItemId(e.target.value)}
+          placeholder="Enter Unit ID (e.g. UNIT-2026-X)"
+          className="px-4 py-2 bg-slate-900 border border-slate-700 rounded focus:outline-none text-white w-64"
+        />
+        <button
+          type="submit"
+          disabled={loading}
+          className="px-6 py-2 bg-sky-600 hover:bg-sky-500 rounded font-semibold transition disabled:opacity-50"
+        >
+          Initialize Pipeline
+        </button>
+      </form>
+
+      {/* Process Pipeline Columns */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        
+        {/* Sequential Stages Column */}
+        <StageGroupColumn
+          title="1. Sequential Phase (1-6)"
+          stages={getStagesByGroup('sequential')}
+          completedStages={pipelineState.completed_stages}
+          allowedNextStages={pipelineState.allowed_next_stages}
+          onExecute={handleExecuteStage}
+        />
+
+        {/* Flexible Group Stages Column */}
+        <StageGroupColumn
+          title="2. Flexible Group Phase (7-10)"
+          stages={getStagesByGroup('flexible_group')}
+          completedStages={pipelineState.completed_stages}
+          allowedNextStages={pipelineState.allowed_next_stages}
+          onExecute={handleExecuteStage}
+        />
+
+        {/* Barrier Stage Column */}
+        <StageGroupColumn
+          title="3. Barrier Synchronization (11)"
+          stages={getStagesByGroup('barrier')}
+          completedStages={pipelineState.completed_stages}
+          allowedNextStages={pipelineState.allowed_next_stages}
+          onExecute={handleExecuteStage}
+        />
+      </div>
+
+      {/* Dynamic Metadata Log */}
+      <div className="mt-8 bg-slate-800 p-4 rounded-lg">
+        <h3 className="text-md font-semibold text-slate-300 mb-2">Stage Execution History Log</h3>
+        <div className="bg-slate-950 p-4 rounded h-40 overflow-y-auto font-mono text-xs text-emerald-400 space-y-1">
+          {pipelineState.logs.length === 0 ? (
+            <span className="text-slate-500">// No stage executions logged yet.</span>
+          ) : (
+            pipelineState.logs.map((log, idx) => (
+              <div key={idx}>
+                [Stage {log.stage_id}] Completed in {log.duration_ms}ms | Payload: {JSON.stringify(log.output)}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Sub-component for rendering stage buttons
+[05-08-2026 06:02 AM] Aa: function StageGroupColumn({ title, stages, completedStages, allowedNextStages, onExecute }) {
+  return (
+    <div className="bg-slate-800 p-4 rounded-lg border border-slate-700">
+      <h2 className="font-semibold text-slate-200 mb-4">{title}</h2>
+      <div className="space-y-3">
+        {stages.map((stage) => {
+          const isCompleted = completedStages.includes(stage.stage_id);
+          const isAllowed = allowedNextStages.includes(stage.stage_id);
+
+          let buttonStyle = "bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed";
+          let badgeText = "LOCKED";
+
+          if (isCompleted) {
+            buttonStyle = "bg-emerald-950 text-emerald-400 border-emerald-700 cursor-default";
+            badgeText = "✓ DONE";
+          } else if (isAllowed) {
+            buttonStyle = "bg-sky-600 text-white border-sky-400 hover:bg-sky-500 cursor-pointer animate-pulse";
+            badgeText = "NEXT";
+          }
+
+          return (
+            <div
+              key={stage.stage_id}
+              onClick={() => isAllowed && onExecute(stage.stage_id)}
+              className={p-3 border rounded-lg flex justify-between items-center transition ${buttonStyle}}
+            >
+              <div>
+                <p className="text-sm font-semibold">Stage {stage.stage_id}</p>
+                <p className="text-xs opacity-75">{stage.name}</p>
+              </div>
+              <span className="text-xs font-mono font-bold px-2 py-1 rounded bg-slate-950/50">
+                {badgeText}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+[04/08, 11:07 pm] Bel Manager Ajay Sir: @⁨Bel Hemanth Anna⁩ 
+@⁨Bel Priya Akka⁩ 
+
+import math
+import numpy as np
+import pandas as pd
+from scipy.signal import hilbert, welch, spectrogram
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+
+# Device Configuration
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# =========================================================
+# 1. ADVANCED HILBERT-FFT SIGNAL PROCESSING ENGINE
+# =========================================================
+class SignalProcessingEngine:
+    """
+    Extracts high-resolution spectral domain representations:
+    1. Hilbert Envelope Spectrum (Bearing Fault Modulation)
+    2. Power Spectral Density (PSD via Welch's Method)
+    3. Motor Current Signature Analysis (MCSA Spectrum)
+    """
+    @staticmethod
+    def compute_hilbert_envelope_fft(signal: np.ndarray, fs: float = 5000.0):
+        """Computes the FFT magnitude of the analytic signal's envelope."""
+        analytic_signal = hilbert(signal)
+        envelope = np.abs(analytic_signal)
+        # Remove DC Offset
+        envelope -= np.mean(envelope)
+        # FFT of Envelope
+        fft_env = np.abs(np.fft.rfft(envelope))
+        freqs = np.fft.rfftfreq(len(envelope), d=1.0/fs)
+        return freqs, fft_env
+
+    @staticmethod
+    def compute_psd(signal: np.ndarray, fs: float = 5000.0):
+        """Welch's Power Spectral Density for stationary component analysis."""
+        freqs, psd = welch(signal, fs=fs, nperseg=min(512, len(signal)))
+        return freqs, psd
+
+# =========================================================
+# 2. SYNTHETIC DYNAMIC 3-AXIS TELEMETRY GENERATOR
+# =========================================================
+def generate_3axis_bldc_telemetry(num_samples=2048, fs=5000.0, fault_type="NORMAL", fault_axis="X"):
+    """
+    Generates non-stationary telemetry signals for X, Y, and Z axes.
+    Monitors: 3x Vibration, 3x Phase Current, 3x Temp, 3x Tracking Error (12 channels total).
+    """
+    t = np.linspace(0, num_samples / fs, num_samples)
+[05-08-2026 06:02 AM] Aa: f_rot = 50.0  # 3000 RPM fundamental mechanical frequency
+    
+    channels = {}
+    axes = ["X", "Y", "Z"]
+    
+    for axis in axes:
+        is_faulty_axis = (axis == fault_axis) and (fault_type != "NORMAL")
+        
+        # Base Signals
+        vib_noise = 0.15 if is_faulty_axis else 0.05
+        vib_base = 0.2 * np.sin(2 * np.pi * f_rot * t)
+        curr_base = 3.0 + 0.8 * np.sin(2 * np.pi * 3 * f_rot * t)  # 3-Phase BLDC ripple
+        temp_base = 42.0
+        track_err = np.random.normal(0, 0.5, num_samples)
+        
+        if is_faulty_axis:
+            if fault_type == "BEARING_OUTER_RACE":
+                # BPFO (Outer Race Pass Frequency) ~ 135.5 Hz amplitude modulation
+                bpfo = 135.5
+                impacts = 1.2 * np.sin(2 * np.pi * 2500 * t) * (np.sin(2 * np.pi * bpfo * t) > 0.7)
+                vib_base += impacts
+                
+            elif fault_type == "WINDING_ASYMMETRY":
+                # Inter-turn winding fault -> Strong 2nd & 5th current harmonic sidebands
+                curr_base += 2.2 * np.sin(2 * np.pi * 2 * f_rot * t) + np.random.normal(0, 0.6, num_samples)
+                temp_base += 28.0
+                
+            elif fault_type == "MECHANICAL_BINDING":
+                # Increased stick-slip friction -> High position tracking error & motor load
+                track_err += 18.0 * np.sin(2 * np.pi * 5 * t) + np.random.normal(0, 2.0, num_samples)
+                curr_base += 3.5
+                temp_base += 15.0
+                
+        # Aggregate Channels per Axis
+        channels[f"{axis}_vib"] = vib_base + np.random.normal(0, vib_noise, num_samples)
+        channels[f"{axis}_curr"] = curr_base + np.random.normal(0, 0.1, num_samples)
+        channels[f"{axis}_temp"] = np.full(num_samples, temp_base) + np.random.normal(0, 0.2, num_samples)
+        channels[f"{axis}_err"] = track_err
+
+    # Stack into 12-channel tensor [12, num_samples]
+    data_matrix = np.array([channels[k] for k in sorted(channels.keys())])
+    return data_matrix
+
+def build_dataset(samples_per_class=250, sequence_length=2048):
+    fault_classes = ["NORMAL", "BEARING_OUTER_RACE", "WINDING_ASYMMETRY", "MECHANICAL_BINDING"]
+    axes = ["X", "Y", "Z"]
+    
+    X_list, y_list = [], []
+    class_map = {name: idx for idx, name in enumerate(fault_classes)}
+    
+    for fault in fault_classes:
+        for axis in axes:
+            if fault == "NORMAL" and axis != "X":
+                continue  # Avoid duplicate normal samples
+            for _ in range(samples_per_class):
+                matrix = generate_3axis_bldc_telemetry(num_samples=sequence_length, fault_type=fault, fault_axis=axis)
+                X_list.append(matrix)
+                y_list.append(class_map[fault])
+                
+    return np.array(X_list, dtype=np.float32), np.array(y_list, dtype=np.int64), class_map
+
+# =========================================================
+# 3. PYTORCH SOTA DUAL-DOMAIN TEMPORAL-SPECTRAL ATTENTION NETWORK
+# =========================================================
+class ResidualBlock1D(nn.Module):
+    """1D Convolutional Residual Block for Time-Domain Feature Extraction."""
+    def init(self, channels):
+        super().init()
+        self.conv1 = nn.Conv1d(channels, channels, kernel_size=5, padding=2)
+        self.bn1 = nn.BatchNorm1d(channels)
+        self.relu = nn.GELU()
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size=5, padding=2)
+        self.bn2 = nn.BatchNorm1d(channels)
+
+    def forward(self, x):
+        residual = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        return self.relu(out + residual)
+
+class DualDomainSpectralAttentionNet(nn.Module):
+    """
+    SOTA Network Architecture:
+    - Branch 1: 1D ResNet Temporal Feature Extractor
+[05-08-2026 06:02 AM] Aa: - Branch 2: Native PyTorch GPU-Accelerated FFT Spectral Feature Extractor
+    - Fusion: Multi-Head Cross-Domain Self-Attention
+    """
+    def init(self, in_channels=12, seq_len=2048, num_classes=4):
+        super().init()
+        
+        # Branch 1: Time-Domain Conv Net
+        self.time_stem = nn.Sequential(
+            nn.Conv1d(in_channels, 32, kernel_size=7, stride=2, padding=3),
+            nn.BatchNorm1d(32),
+            nn.GELU(),
+            nn.MaxPool1d(2)
+        )
+        self.res1 = ResidualBlock1D(32)
+        self.res2 = ResidualBlock1D(32)
+        
+        # Branch 2: Spectral Domain (FFT Magnitude Processing)
+        fft_bins = (seq_len // 2) + 1
+        self.fft_fc = nn.Sequential(
+            nn.Linear(fft_bins * in_channels, 256),
+            nn.BatchNorm1d(256),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128)
+        )
+        
+        # Time Feature Projection
+        time_out_len = seq_len // 4
+        self.time_proj = nn.Linear(32 * time_out_len, 128)
+        
+        # Multi-Head Self-Attention Fusion
+        self.attention = nn.MultiheadAttention(embed_dim=256, num_heads=4, batch_first=True)
+        
+        # Final Classifier Head
+        self.classifier = nn.Sequential(
+            nn.Linear(256, 64),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, num_classes)
+        )
+
+    def forward(self, x):
+        batch_size = x.size(0)
+        
+        # --- Time-Domain Path ---
+        t_feat = self.time_stem(x)
+        t_feat = self.res1(t_feat)
+        t_feat = self.res2(t_feat)
+        t_flat = t_feat.view(batch_size, -1)
+        t_emb = self.time_proj(t_flat)  # [Batch, 128]
+        
+        # --- Spectral FFT Path (PyTorch GPU Native FFT) ---
+        fft_complex = torch.fft.rfft(x, dim=-1)
+        fft_mag = torch.abs(fft_complex)  # [Batch, 12, FFT_Bins]
+        fft_flat = fft_mag.view(batch_size, -1)
+        s_emb = self.fft_fc(fft_flat)   # [Batch, 128]
+        
+        # --- Dual-Domain Fusion & Attention ---
+        dual_domain_emb = torch.cat([t_emb, s_emb], dim=-1).unsqueeze(1)  # [Batch, 1, 256]
+        attn_out, _ = self.attention(dual_domain_emb, dual_domain_emb, dual_domain_emb)
+        attn_out = attn_out.squeeze(1)  # [Batch, 256]
+        
+        # --- Classification ---
+        logits = self.classifier(attn_out)
+        return logits
+
+# =========================================================
+# 4. TRAINING & EVALUATION PIPELINE
+# =========================================================
+def main():
+    print("[1/5] Building Synthetic 3-Axis Servo Dataset with Hilbert-FFT Telemetry...")
+    X_raw, y_raw, class_map = build_dataset(samples_per_class=200, sequence_length=2048)
+    inv_class_map = {v: k for k, v in class_map.items()}
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_raw, y_raw, test_size=0.2, random_state=42, stratify=y_raw
+    )
+    
+    train_dataset = TensorDataset(torch.tensor(X_train), torch.tensor(y_train))
+    test_dataset = TensorDataset(torch.tensor(X_test), torch.tensor(y_test))
+    
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    
+    print(f"[2/5] Initializing Dual-Domain Spectral Attention ResNet on Device: {DEVICE}...")
+    model = DualDomainSpectralAttentionNet(in_channels=12, seq_len=2048, num_classes=len(class_map)).to(DEVICE)
+    
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=15)
+    
+    print("[3/5] Training Deep Learning Model...")
+    epochs = 15
+    for epoch in range(1, epochs + 1):
+        model.train()
+        running_loss = 0.0
+[05-08-2026 06:02 AM] Aa: correct = 0
+        total = 0
+        
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item() * inputs.size(0)
+            _, preds = torch.max(outputs, 1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+            
+        scheduler.step()
+        epoch_acc = (correct / total) * 100
+        epoch_loss = running_loss / total
+        print(f"  Epoch [{epoch:02d}/{epochs:02d}] - Loss: {epoch_loss:.4f} | Accuracy: {epoch_acc:.2f}%")
+
+    print("\n[4/5] Evaluating SOTA Model Performance on Held-Out Test Set...")
+    model.eval()
+    all_preds = []
+    all_targets = []
+    
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs = inputs.to(DEVICE)
+            outputs = model(inputs)
+            _, preds = torch.max(outputs, 1)
+            all_preds.extend(preds.cpu().numpy())
+            all_targets.extend(labels.numpy())
+
+    print("\n--- CLASSIFICATION METRICS REPORT ---")
+    target_names = [inv_class_map[i] for i in range(len(class_map))]
+    print(classification_report(all_targets, all_preds, target_names=target_names))
+
+    # =========================================================
+    # 5. REAL-TIME HIGH-SPEED INFERENCE SIMULATION
+    # =========================================================
+    print("[5/5] Running Live Signal Processing & Model Inference...")
+    
+    # Generate live fault sample (Bearing Fault on Axis Y)
+    live_sample = generate_3axis_bldc_telemetry(num_samples=2048, fault_type="BEARING_OUTER_RACE", fault_axis="Y")
+    
+    # Compute Hilbert Envelope Spectrum for Verification
+    vib_signal_y = live_sample[4]  # Axis Y Vibration
+    freqs, env_fft = SignalProcessingEngine.compute_hilbert_envelope_fft(vib_signal_y)
+    peak_freq = freqs[np.argmax(env_fft)]
+    
+    # Model Prediction
+    model_input = torch.tensor(live_sample).unsqueeze(0).to(DEVICE)  # Shape: [1, 12, 2048]
+    model.eval()
+    with torch.no_grad():
+        logits = model(model_input)
+        probs = torch.softmax(logits, dim=-1).squeeze(0)
+        pred_class_idx = torch.argmax(probs).item()
+        confidence = probs[pred_class_idx].item() * 100
+
+    print("\n================== LIVE DIAGNOSTIC RESULT ==================")
+    print(f"Predicted State         : {inv_class_map[pred_class_idx]}")
+    print(f"Diagnostic Confidence   : {confidence:.2f}%")
+    print(f"Hilbert FFT Dominant Peak: {peak_freq:.2f} Hz (Bearing Defect Signature)")
+    print("============================================================")
+
+if name == "main":
+    main()
+[04/08, 11:10 pm] Bel Manager Ajay Sir: Motor
+[04/08, 11:39 pm] Bel Manager Ajay Sir: @⁨Bel Afshan Alam SST⁩ 
+@⁨Adithya⁩ 
+
+
+{
+  "assemblyId": "ASM-9901",
+  "completed": [1, 2, 3, 4, 5, 7],
+  "nextAllowed": [6, 8],
+  "rules": {
+    "5": [1, 2, 3, 4],
+    "6": [5],
+    "7": [5],
+    "8": [5],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:39 pm] Bel Manager Ajay Sir: ​completed: Shows stages already done (1, 2, 3, 4, 5, and 7).
+​nextAllowed: Shows which stages can be done right now (6 or 8).
+​rules: Maps each stage to its required prerequisites. Stage 9 stays locked until all numbers 1 through 8 exist inside completed.
+[04/08, 11:39 pm] Bel Manager Ajay Sir: def get_next_allowed(data):
+    done = set(data["completed"])
+    return [
+        int(stage) for stage, reqs in data["rules"].items()
+        if int(stage) not in done and all(r in done for r in reqs)
+    ]
+
+# Output: [6, 8]
+[04/08, 11:41 pm] Bel Manager Ajay Sir: Simplest approch
+[05-08-2026 06:02 AM] Aa: [04/08, 11:47 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "completed": [1, 2, 3, 4, 5, 6],
+  "nextAllowed": [7, 8],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:50 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "IN_PROGRESS",
+  "completed": [],
+  "nextAllowed": [1],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:50 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "IN_PROGRESS",
+  "completed": [1],
+  "nextAllowed": [2],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:50 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "IN_PROGRESS",
+  "completed": [1, 2],
+  "nextAllowed": [3],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:50 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "IN_PROGRESS",
+  "completed": [1, 2, 3],
+  "nextAllowed": [4],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:50 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "IN_PROGRESS",
+  "completed": [1, 2, 3, 4],
+  "nextAllowed": [5],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:50 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "IN_PROGRESS",
+  "completed": [1, 2, 3, 4, 5],
+  "nextAllowed": [6],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:51 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "IN_PROGRESS",
+  "completed": [1, 2, 3, 4, 5, 6],
+  "nextAllowed": [7, 8],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:51 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "IN_PROGRESS",
+  "completed": [1, 2, 3, 4, 5, 6, 7],
+  "nextAllowed": [8],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:51 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "IN_PROGRESS",
+  "completed": [1, 2, 3, 4, 5, 6, 7, 8],
+  "nextAllowed": [9],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:51 pm] Bel Manager Ajay Sir: {
+  "assemblyId": "ASM-9901",
+  "status": "COMPLETED",
+  "completed": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  "nextAllowed": [],
+  "rules": {
+    "1": [],
+    "2": [1],
+    "3": [2],
+    "4": [3],
+    "5": [4],
+    "6": [5],
+    "7": [6],
+    "8": [6],
+    "9": [1, 2, 3, 4, 5, 6, 7, 8]
+  }
+}
+[04/08, 11:52 pm] Bel Manager Ajay Sir: def get_next_allowed(data: dict) -> list[int]:
+    """Calculates which stages can be executed next based on completion rules."""
+    completed = set(data.get("completed", []))
+    rules = data.get("rules", {})
+    
+    next_allowed = []
+    
+    for stage_str, prerequisites in rules.items():
+        stage = int(stage_str)
+[05-08-2026 06:02 AM] Aa: # 1. Stage must NOT already be completed
+        # 2. ALL prerequisites for this stage must exist in the completed set
+        if stage not in completed and all(p in completed for p in prerequisites):
+            next_allowed.append(stage)
+            
+    return sorted(next_allowed)
+
+
+# --- Example Usage ---
+
+data = {
+    "assemblyId": "ASM-9901",
+    "status": "IN_PROGRESS",
+    "completed": [1, 2, 3, 4, 5, 6],
+    "nextAllowed": [],
+    "rules": {
+        "1": [],
+        "2": [1],
+        "3": [2],
+        "4": [3],
+        "5": [4],
+        "6": [5],
+        "7": [6],
+        "8": [6],
+        "9": [1, 2, 3, 4, 5, 6, 7, 8]
+    }
+}
+
+# Dynamically calculate next allowed stages
+data["nextAllowed"] = get_next_allowed(data)
+
+print(f"Completed: {data['completed']}")
+print(f"Next Allowed: {data['nextAllowed']}")  # Output: [7, 8]
