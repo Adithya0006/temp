@@ -1,0 +1,618 @@
+Exactly — **`.env` is not magically encrypted.** If someone gets access to the server/filesystem, they can open `.env` and see the secret.
+
+The purpose of `.env` is mainly to **keep secrets out of your source code and Git repository**, not to make them invisible to everyone.
+
+Let me show this using **your exact files**.
+
+---
+
+# 1. Your current Node structure
+
+From your uploaded code, you currently have:
+
+```text
+Node project
+│
+├── config/
+│   └── auth.config.js
+│
+├── controllers/
+│   └── auth.controller.js
+│
+├── middleware/
+│   └── authJwt.js
+│
+└── ...
+```
+
+Your current `auth.config.js` contains:
+
+```js
+export const config = {
+    secret: "nodeappRia-secret-key"
+};
+```
+
+
+
+### We want to REMOVE the secret from this file.
+
+---
+
+# 2. Create `.env` in Node
+
+At the **root of your Node project**, create:
+
+```text
+Node project
+│
+├── .env              ← CREATE THIS
+├── package.json
+├── config/
+│   └── auth.config.js
+├── controllers/
+│   └── auth.controller.js
+└── ...
+```
+
+Inside `.env`:
+
+```env
+JWT_SECRET=nodeappRia-secret-key
+```
+
+That's all.
+
+---
+
+# 3. Install dotenv in Node
+
+From the Node project directory:
+
+```bash
+npm install dotenv
+```
+
+---
+
+# 4. Find your Node entry file
+
+You uploaded an `index.js`, and your project appears to use ES modules.
+
+At the **very beginning of your Node entry file**, add:
+
+```js
+import dotenv from "dotenv";
+
+dotenv.config();
+```
+
+So conceptually:
+
+```js
+import dotenv from "dotenv";
+
+dotenv.config();
+
+import express from "express";
+// other imports...
+```
+
+The important thing is:
+
+```js
+dotenv.config();
+```
+
+must execute before code that tries to read `process.env.JWT_SECRET`.
+
+---
+
+# 5. Change `auth.config.js`
+
+### CURRENT
+
+Your file currently has:
+
+```js
+export const config = {
+    secret: "nodeappRia-secret-key"
+};
+```
+
+
+
+### CHANGE IT TO
+
+```js
+export const config = {
+    secret: process.env.JWT_SECRET
+};
+```
+
+That's the **only change needed in this file**.
+
+---
+
+# 6. What happens now?
+
+Your `auth.controller.js` already does:
+
+```js
+jwt.sign(
+    { id: user.userID },
+    config.secret,
+    {
+        expiresIn: 86400
+    }
+);
+```
+
+
+
+You don't need to change that.
+
+Because:
+
+```text
+auth.controller.js
+        │
+        │ config.secret
+        ▼
+auth.config.js
+        │
+        │ process.env.JWT_SECRET
+        ▼
+.env
+        │
+        │ nodeappRia-secret-key
+        ▼
+JWT
+```
+
+---
+
+# 7. Now FastAPI
+
+Your FastAPI is a **separate application**.
+
+So it gets its own `.env`.
+
+Your structure could be:
+
+```text
+FastAPI project
+│
+├── .env              ← CREATE THIS
+├── main.py
+├── auth.py
+├── database.py
+└── ...
+```
+
+FastAPI `.env`:
+
+```env
+JWT_SECRET=nodeappRia-secret-key
+```
+
+Notice the value is the **same** as Node's.
+
+```text
+Node .env                    FastAPI .env
+
+JWT_SECRET=ABC123            JWT_SECRET=ABC123
+                 ↑
+              SAME VALUE
+```
+
+---
+
+# 8. Install Python dotenv
+
+Inside your FastAPI project:
+
+```bash
+pip install python-dotenv
+```
+
+---
+
+# 9. Load `.env` in FastAPI
+
+For example, create:
+
+```text
+auth.py
+```
+
+and add:
+
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+JWT_SECRET = os.getenv("JWT_SECRET")
+```
+
+Now:
+
+```text
+.env
+ ↓
+load_dotenv()
+ ↓
+os.getenv("JWT_SECRET")
+ ↓
+JWT_SECRET
+```
+
+---
+
+# 10. Use it in your JWT verification
+
+Your FastAPI authentication function:
+
+```python
+from fastapi import Request, HTTPException
+from jose import jwt, JWTError
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+JWT_SECRET = os.getenv("JWT_SECRET")
+ALGORITHM = "HS256"
+
+
+def get_current_user(request: Request):
+
+    token = request.headers.get("x-access-token")
+
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="No token provided"
+        )
+
+    try:
+
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[ALGORITHM]
+        )
+
+        user_id = payload.get("id")
+
+        if user_id is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token"
+            )
+
+        return user_id
+
+    except JWTError:
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token"
+        )
+```
+
+Now FastAPI uses the **same secret** that Node uses to generate the JWT.
+
+---
+
+# 11. But your question is very important: "Anyone can open `.env`, right?"
+
+### Yes.
+
+If someone has access to your server's filesystem, they can potentially do:
+
+```bash
+cat .env
+```
+
+and see:
+
+```env
+JWT_SECRET=ABC123
+```
+
+`.env` is **not encryption**.
+
+Think of it like this:
+
+### Without `.env`
+
+Your source code contains:
+
+```js
+const SECRET = "ABC123";
+```
+
+Then you push your project to GitHub:
+
+```text
+GitHub
+  ↓
+source code
+  ↓
+ABC123 ❌
+```
+
+Anyone who can see the repository can see your secret.
+
+---
+
+### With `.env`
+
+Your source code contains:
+
+```js
+const SECRET = process.env.JWT_SECRET;
+```
+
+Your `.env` contains:
+
+```env
+JWT_SECRET=ABC123
+```
+
+And `.gitignore` says:
+
+```gitignore
+.env
+```
+
+So:
+
+```text
+Your computer/server
+│
+├── source code
+│     └── no secret
+│
+└── .env
+      └── secret
+```
+
+When you push to GitHub:
+
+```text
+GitHub
+│
+├── source code ✅
+└── .env ❌ not uploaded
+```
+
+That's the main benefit.
+
+---
+
+# 12. `.gitignore` is VERY important
+
+In **Node project**:
+
+```text
+.gitignore
+```
+
+add:
+
+```gitignore
+.env
+```
+
+In **FastAPI project**, also:
+
+```gitignore
+.env
+```
+
+So your repositories don't contain the secrets.
+
+---
+
+# 13. Then how does production work?
+
+This is where `.env` gets even more useful.
+
+Suppose your production server is:
+
+```text
+AWS / Azure / company server
+```
+
+You don't have to put the secret into GitHub.
+
+Instead, the deployment environment provides:
+
+```text
+JWT_SECRET=very-long-random-secret
+```
+
+Your application reads:
+
+```js
+process.env.JWT_SECRET
+```
+
+or:
+
+```python
+os.getenv("JWT_SECRET")
+```
+
+So the secret is **configuration**, not source code.
+
+---
+
+# 14. There is an even better option for production
+
+For a real production system, you usually don't manually depend on a `.env` file sitting on the server.
+
+You can use a **secret manager**, such as:
+
+```text
+AWS Secrets Manager
+Azure Key Vault
+Google Secret Manager
+HashiCorp Vault
+Kubernetes Secrets
+```
+
+Then:
+
+```text
+              Secret Manager
+                    │
+             JWT_SECRET
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+        Node                FastAPI
+          │                   │
+       process.env         os.getenv
+```
+
+The application gets the secret at runtime.
+
+---
+
+# 15. One more important thing for YOUR setup
+
+You currently have this secret:
+
+```text
+nodeappRia-secret-key
+```
+
+Since you've pasted/shared it here and it is being used by your application, **treat that secret as exposed**.
+
+For your actual application, generate a new strong random secret and use that in both environments.
+
+For example, conceptually:
+
+```env
+JWT_SECRET=<long-random-secret>
+```
+
+Don't use a short human-readable secret in production.
+
+---
+
+# Your exact changes
+
+### Node
+
+**CREATE:**
+
+```text
+Node/.env
+```
+
+```env
+JWT_SECRET=<new-random-secret>
+```
+
+**CHANGE:**
+
+```text
+Node/config/auth.config.js
+```
+
+from:
+
+```js
+export const config = {
+    secret: "nodeappRia-secret-key"
+};
+```
+
+to:
+
+```js
+export const config = {
+    secret: process.env.JWT_SECRET
+};
+```
+
+**ADD to Node entry file:**
+
+```js
+import dotenv from "dotenv";
+
+dotenv.config();
+```
+
+**CREATE/UPDATE `.gitignore`:**
+
+```gitignore
+.env
+```
+
+---
+
+### FastAPI
+
+**CREATE:**
+
+```text
+FastAPI/.env
+```
+
+```env
+JWT_SECRET=<same-new-random-secret>
+```
+
+**Install:**
+
+```bash
+pip install python-dotenv
+```
+
+**In your auth/dependency file:**
+
+```python
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+JWT_SECRET = os.getenv("JWT_SECRET")
+```
+
+Then:
+
+```python
+jwt.decode(
+    token,
+    JWT_SECRET,
+    algorithms=["HS256"]
+)
+```
+
+**`.gitignore`:**
+
+```gitignore
+.env
+```
+
+---
+
+### The key idea
+
+`.env` doesn't mean:
+
+> **"Nobody can see this secret."**
+
+It means:
+
+> **"Don't put this secret inside your source code or commit it to Git. Keep it as deployment configuration."**
+
+And in production, you can go one step further and use a proper **secret manager** instead of a `.env` file.
