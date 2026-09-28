@@ -1,0 +1,233 @@
+BEGIN;
+
+DO $$
+DECLARE
+    m RECORD;
+    r RECORD;
+
+    old_exists BOOLEAN;
+    new_exists BOOLEAN;
+
+    rows_updated BIGINT;
+BEGIN
+
+    -- ==========================================================
+    -- PART NUMBER MAPPINGS
+    -- ==========================================================
+
+    FOR m IN
+        SELECT *
+        FROM (
+            VALUES
+                ('113300033357', '000000113300033357'),
+                ('113300020941', '000000113300020941')
+        ) AS x(old_part_number, new_part_number)
+    LOOP
+
+        RAISE NOTICE '==============================================';
+        RAISE NOTICE 'Processing % -> %',
+            m.old_part_number,
+            m.new_part_number;
+
+
+        -- ======================================================
+        -- CHECK OLD MASTER
+        -- ======================================================
+
+        SELECT EXISTS (
+            SELECT 1
+            FROM product_type_master
+            WHERE part_number = m.old_part_number
+        )
+        INTO old_exists;
+
+
+        -- Old value not present -> do nothing
+        IF NOT old_exists THEN
+
+            RAISE NOTICE
+                'Old master % not found. Skipping.',
+                m.old_part_number;
+
+            CONTINUE;
+
+        END IF;
+
+
+        -- ======================================================
+        -- CHECK NEW MASTER
+        -- ======================================================
+
+        SELECT EXISTS (
+            SELECT 1
+            FROM product_type_master
+            WHERE part_number = m.new_part_number
+        )
+        INTO new_exists;
+
+
+        -- ======================================================
+        -- CREATE PADDED MASTER IF IT DOES NOT EXIST
+        -- ======================================================
+
+        IF NOT new_exists THEN
+
+            INSERT INTO product_type_master
+            (
+                product_type_name,
+                sub_product_type_name,
+                part_number,
+                description,
+                plant_code
+            )
+            SELECT
+                product_type_name,
+                sub_product_type_name,
+                m.new_part_number,
+                description,
+                plant_code
+            FROM product_type_master
+            WHERE part_number = m.old_part_number;
+
+            RAISE NOTICE
+                'Created padded master: %',
+                m.new_part_number;
+
+        ELSE
+
+            RAISE NOTICE
+                'Padded master already exists: %',
+                m.new_part_number;
+
+        END IF;
+
+
+        -- ======================================================
+        -- UPDATE ONLY PART-NUMBER COLUMNS
+        --
+        -- Examples:
+        --   part_number
+        --   product_part_number
+        --   partNumber
+        --   BEL_Part_Number
+        --   PCB_part_number
+        --
+        -- NOT:
+        --   operation_type
+        --   description
+        --   remarks
+        --   status
+        --   etc.
+        -- ======================================================
+
+        FOR r IN
+            SELECT
+                c.table_schema,
+                c.table_name,
+                c.column_name,
+                c.data_type
+            FROM information_schema.columns c
+            JOIN information_schema.tables t
+              ON t.table_schema = c.table_schema
+             AND t.table_name = c.table_name
+            WHERE c.table_schema = 'public'
+              AND t.table_type = 'BASE TABLE'
+
+              -- Text-like columns only
+              AND c.data_type IN (
+                    'character varying',
+                    'character',
+                    'text'
+              )
+
+              -- Column name must represent a part-number field.
+              --
+              -- Lower() + removing "_" makes all of these match:
+              -- part_number
+              -- partNumber
+              -- product_part_number
+              -- BEL_Part_Number
+              --
+              AND REPLACE(LOWER(c.column_name), '_', '')
+                  LIKE '%partnumber%'
+
+              -- Don't directly modify the master key.
+              -- We handle that by keeping the new master and
+              -- deleting the old master.
+              AND NOT (
+                    LOWER(c.table_name) = 'product_type_master'
+                    AND LOWER(c.column_name) = 'part_number'
+              )
+
+        LOOP
+
+            EXECUTE format(
+                'UPDATE %I.%I
+                 SET %I = $1
+                 WHERE %I = $2',
+                r.table_schema,
+                r.table_name,
+                r.column_name,
+                r.column_name
+            )
+            USING
+                m.new_part_number,
+                m.old_part_number;
+
+
+            GET DIAGNOSTICS rows_updated = ROW_COUNT;
+
+
+            IF rows_updated > 0 THEN
+
+                RAISE NOTICE
+                    'Updated %.%.% : % row(s)',
+                    r.table_schema,
+                    r.table_name,
+                    r.column_name,
+                    rows_updated;
+
+            END IF;
+
+        END LOOP;
+
+
+        -- ======================================================
+        -- DELETE OLD MASTER
+        -- ======================================================
+
+        DELETE FROM product_type_master
+        WHERE part_number = m.old_part_number;
+
+
+        RAISE NOTICE
+            'Deleted old master: %',
+            m.old_part_number;
+
+    END LOOP;
+
+END $$;
+
+
+-- ==========================================================
+-- FINAL VERIFICATION
+-- ==========================================================
+
+SELECT
+    id,
+    product_type_name,
+    sub_product_type_name,
+    part_number,
+    description,
+    plant_code
+FROM product_type_master
+WHERE part_number IN (
+    '113300033357',
+    '000000113300033357',
+    '113300020941',
+    '000000113300020941'
+)
+ORDER BY id;
+
+
+COMMIT;
