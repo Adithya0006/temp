@@ -227,6 +227,248 @@ WHERE part_number IN (
     '113300020941',
     '000000113300020941'
 )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Here is the complete guide in one place. It has 5 steps in 3 files, plus the `.env` file.
+
+## The idea in 3 lines
+
+1. Every plant-specific table gets a `plant_code` column, which acts like a label such as "1100".
+2. A small table `user_scope` says which plants each user can see.
+3. One piece of code in `Data_Server.py` adds `WHERE plant_code IN (user's plants)` to your queries, so you don't touch the 256 endpoints.
+
+**Before you start, take a backup of your database.**
+
+## Step 1: Database (run these in SQL Server / your DB tool)
+
+**Where:** your DB tool, not a Python file.
+
+```sql
+-- A. add the label column to these tables
+ALTER TABLE equipment_details      ADD plant_code VARCHAR(10) NULL;
+ALTER TABLE process_flow_master    ADD plant_code VARCHAR(10) NULL;
+ALTER TABLE generated_qr_records   ADD plant_code VARCHAR(10) NULL;
+ALTER TABLE machine_breakdown_logs ADD plant_code VARCHAR(10) NULL;
+ALTER TABLE maintenance_schedules  ADD plant_code VARCHAR(10) NULL;
+
+-- B. mark all existing rows as plant 1100
+UPDATE equipment_details      SET plant_code = '1100';
+UPDATE process_flow_master    SET plant_code = '1100';
+UPDATE generated_qr_records   SET plant_code = '1100';
+UPDATE machine_breakdown_logs SET plant_code = '1100';
+UPDATE maintenance_schedules  SET plant_code = '1100';
+
+-- C. new table: which user can see which plant
+CREATE TABLE user_scope (
+  id INT IDENTITY PRIMARY KEY,
+  userID VARCHAR(50) NOT NULL,
+  plant_code VARCHAR(10) NOT NULL
+);
+
+-- D. give all current users access to 1100
+INSERT INTO user_scope (userID, plant_code)
+SELECT userID, '1100' FROM userProfiles;
+```
+
+Step B matters. Rows with an empty `plant_code` would be hidden from everyone after the filter is on.
+
+You don't need a link (ForeignKey) to the plants table. The filter works without it.
+
+## Step 2: Database_models.py
+
+**Change 1.** Inside each of these 5 classes, add one line:
+
+- `Equipments`
+- `ProcessFlowMaster`
+- `QRRecord_Generated`
+- `MachineBreakdownLog`
+- `MaintenanceScheduleLog`
+
+```python
+plant_code = Column(String)
+```
+
+For example:
+
+```python
+class Equipments(base):
+    __tablename__ = "equipment_details"
+    id = Column(Integer, primary_key=True)
+    ...
+    plant_code = Column(String)     # <-- new line
+```
+
+**Change 2.** At the very bottom of the file, add:
+
+```python
+class UserScope(base):
+    __tablename__ = "user_scope"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    userID = Column(String, index=True)
+    plant_code = Column(String)
+```
+
+## Step 3: Data_Server.py (the main change)
+
+**Where:** find `def init_db():` around line 129. Delete that whole function and paste this block in its place:
+
+```python
+from sqlalchemy import event
+from sqlalchemy.orm import Session, with_loader_criteria, object_session
+
+# Tables that are NOT filtered by plant
+EXCLUDE = {UserScope, Plant}
+
+# Tables that already have a plant column with a different name
+EXTRA = {PcbData: "plant", BOMItem: "plant",
+         FlowManagement: "plant", PartProcessTime: "plant"}
+
+_cache = None
+def scoped_models():
+    """Finds every table that has a plant_code column, automatically."""
+    global _cache
+    if _cache is None:
+        found = {}
+        for m in base.registry.mappers:
+            cls = m.class_
+            if cls in EXCLUDE:
+                continue
+            if cls in EXTRA:
+                found[cls] = EXTRA[cls]
+            elif hasattr(cls, "plant_code"):
+                found[cls] = "plant_code"
+        _cache = found
+    return _cache
+
+def get_scope(payload=Depends(verify_token)):
+    """Which plants can this user see? None = no filtering."""
+    if not isinstance(payload, dict):
+        return None
+    staff = payload.get("userID")          # <-- see "Confusions" below
+    db = session()
+    try:
+        rows = db.query(UserScope.plant_code).filter(UserScope.userID == staff).all()
+        return [r[0] for r in rows]
+    finally:
+        db.close()
+
+def init_db(plants=Depends(get_scope)):
+    db = session()
+    db.info["plants"] = plants
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Adds "WHERE plant_code IN (...)" to every query automatically
+@event.listens_for(Session, "do_orm_execute")
+def add_plant_filter(state):
+    plants = state.session.info.get("plants")
+    if plants is None or not state.is_select:
+        return
+    state.statement = state.statement.options(*[
+        with_loader_criteria(M, getattr(M, col).in_(plants), include_aliases=True)
+        for M, col in scoped_models().items()
+    ])
+
+# When a user saves a NEW row, fill its plant_code automatically
+@event.listens_for(base, "before_insert", propagate=True)
+def stamp_plant(mapper, connection, target):
+    col = scoped_models().get(type(target))
+    if not col:
+        return
+    s = object_session(target)
+    plants = s.info.get("plants") if s else None
+    if plants and len(plants) == 1 and getattr(target, col) is None:
+        setattr(target, col, plants[0])
+```
+
+Your endpoints stay exactly as they are. `db.query(Equipments).all()` now returns only the user's plant.
+
+## Step 4: .env file
+
+Change this line:
+
+```
+CHECK_JWT_VALIDATION=True
+```
+
+While it is `False`, the server can't tell who the user is, so nothing gets filtered.
+
+## Step 5: Restart and test
+
+1. Restart the FastAPI server.
+2. Log in as a normal user and call `/get_equip`. You should see all your data, because everything is labeled 1100.
+3. Add a test user: `INSERT INTO user_scope VALUES ('TEST1', '1200')`.
+4. Log in as `TEST1` and call `/get_equip`. You should get an **empty list**, because TEST1 can only see plant 1200.
+
+If both results are right, filtering works.
+
+## Confusions to avoid
+
+- **Which key holds the user id in your token?** Look at your server console for the line starting `payload:v`. It shows what is inside the token. If the user id is called `staff_no` instead of `userID`, change that one line in `get_scope`.
+- **A user who isn't in `user_scope` sees nothing.** Every new user needs a row in `user_scope`. You can add this to your "create user" code later.
+- **Adding a column in models doesn't add it to the database.** SQLAlchemy won't change existing tables for you. That is why Step 1 is needed.
+- **For every new plant-specific table:** add `plant_code = Column(String)` in the model, and `ALTER TABLE` plus `UPDATE` in the DB if the table already exists. Nothing else.
+- **Tables like holidays or shift definitions** can stay shared by all plants. Don't add the column.
+- **Child tables** (`dimension_reports`, `operator_log`, `rework_track`) are not filtered in this version. Their parent tables are, but if an endpoint lists them directly, all plants' rows appear. We can handle those next, after this works.
+- **Raw SQL is not filtered.** Search your file for `text(` and `execute("`. Those queries need a manual `WHERE`.
+- **Users with 2 or more plants** won't get `plant_code` filled automatically on new rows. The frontend must send it. Single-plant users are fully automatic.
+- **Duplicate names across plants:** `step_name`, `part_number` and a few others are unique across the whole database. Plant 2 can't reuse a name that plant 1 already uses. This only matters when the second plant starts entering data.
+
+Start with Steps 1 to 5 exactly as written, test with the 2 users, and tell me what you see.
 ORDER BY id;
 
 
